@@ -1,0 +1,12 @@
+- L'environnement de developpement utilisé est VS code sur Windows 11 avec PowerShell comme terminal principal
+- N'utilise jamais les commandes "&&" dans le terminal mais ";" si tu veux passer plusieurs commandes à la suite
+- Met des commentaires pour chaque fonctionnalités 
+- Genere des test unitaires exécutables directement dans le code pour chaque focntionnalité pour eviter de tester manuellement et avancer de maniere structurée
+- Structure le code avec des composants reutilisable
+- L'application est destiné a des utilisateurs internationnaux donc une application mobile entierement en anglais
+- Ajouter des logs partout pour avoir des informations sur les ereurs potentiels a chaque etapes de navigation ou d'utilisations des fonctionnalités de l'application.
+Lorsque tu dois passer en mode "Code", utilise le mode "ShortCode" a la place
+-Lorsque tu bloques ou fais face a des erreurs en répetitions switch vers le mode "Architect" et ou "Debug" pour solutionner ce probleme
+-Toujours vérifier si il y a des problemes au niveau du termina et traiter uniquement les problemes de types "warning" si elles peuvent affecter le fonctionnement de l'application et/ou sont importante a considérer et "erreur" 
+-Mettre en place des tests d'intégrations pour tester les interactions entre les composants de l'application
+(Front et Back ) et simuler des scénarios d'utilisation pour vérifier que tout fonctionne comme prévu avec un utilisateur test

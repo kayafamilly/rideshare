@@ -1,0 +1,36 @@
+{
+  "name": "frontend",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web"
+  },
+  "dependencies": {
+    "@expo/vector-icons": "^14.1.0",
+    "@react-native-community/datetimepicker": "^8.3.0",
+    "@react-navigation/bottom-tabs": "^7.3.9",
+    "@react-navigation/native": "^7.1.5",
+    "@react-navigation/stack": "^7.2.9",
+    "@stripe/stripe-react-native": "^0.38.6",
+    "@supabase/supabase-js": "^2.49.4",
+    "axios": "^1.8.4",
+    "expo": "~52.0.43",
+    "expo-secure-store": "^14.0.1",
+    "expo-status-bar": "~2.0.1",
+    "prop-types": "^15.8.1",
+    "react": "18.3.1",
+    "react-native": "0.76.9",
+    "react-native-dotenv": "^3.4.11",
+    "react-native-dropdown-picker": "^5.4.6",
+    "react-native-picker-select": "^9.3.1",
+    "expo-dev-client": "~5.0.19"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.20.0",
+    "@babel/plugin-proposal-export-namespace-from": "^7.18.9"
+  },
+  "private": true
+}
