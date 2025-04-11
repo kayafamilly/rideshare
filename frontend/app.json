@@ -13,14 +13,20 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.rideshare.app"
     },
     "android": {
+    	"package": "com.rideshare.app",
+    	"googleServicesFile": "./android/app/google-services.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "rideshare.android"
+      "notification": {
+        "icon": "./assets/notification-icon.png",
+        "color": "#FFFFFF"
+      }
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -29,6 +35,16 @@
       "eas": {
         "projectId": "05f0284c-69eb-45db-9b05-87374d8b2d68"
       }
-    }
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#ffffff",
+          "sounds": []
+        }
+      ]
+    ]
   }
 }
