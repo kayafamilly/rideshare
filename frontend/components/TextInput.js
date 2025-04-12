@@ -10,6 +10,7 @@ const TextInput = ({ label, error, style, ...props }) => {
       <RNTextInput
         style={[styles.input, error ? styles.inputError : null]}
         placeholderTextColor="#aaa" // Light grey placeholder text
+        testID="textInput" // Added testID for testing
         {...props} // Pass down other props like value, onChangeText, placeholder, secureTextEntry etc.
       />
       {error && <Text style={styles.errorText}>{error}</Text>}

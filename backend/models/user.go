@@ -9,17 +9,20 @@ import (
 // User represents the structure for the 'users' table in the database.
 // Corresponds to the SQL definition in 001_create_users_table.sql
 type User struct {
-	ID           uuid.UUID  `json:"id" db:"id"`                             // Primary key, auto-generated UUID
-	Email        string     `json:"email" db:"email"`                       // User's email, unique and required
-	PasswordHash string     `json:"-" db:"password_hash"`                   // Hashed password (excluded from JSON responses)
-	FirstName    *string    `json:"first_name,omitempty" db:"first_name"`   // User's first name (optional, pointer for NULL)
-	LastName     *string    `json:"last_name,omitempty" db:"last_name"`     // User's last name (optional, pointer for NULL)
-	BirthDate    *time.Time `json:"birth_date,omitempty" db:"birth_date"`   // User's date of birth (optional, pointer for NULL)
-	Nationality  *string    `json:"nationality,omitempty" db:"nationality"` // User's nationality (optional, pointer for NULL)
-	WhatsApp     string     `json:"whatsapp" db:"whatsapp"`                 // User's WhatsApp number, unique and required
-	CreatedAt    time.Time  `json:"created_at" db:"created_at"`             // Timestamp of user creation
-	UpdatedAt    time.Time  `json:"updated_at" db:"updated_at"`             // Timestamp of last user update
-	DeletedAt    *time.Time `json:"-" db:"deleted_at"`                      // Timestamp for soft delete (excluded from JSON)
+	ID               uuid.UUID  `json:"id" db:"id"`                             // Primary key, auto-generated UUID
+	Email            string     `json:"email" db:"email"`                       // User's email, unique and required
+	PasswordHash     string     `json:"-" db:"password_hash"`                   // Hashed password (excluded from JSON responses)
+	FirstName        *string    `json:"first_name,omitempty" db:"first_name"`   // User's first name (optional, pointer for NULL)
+	LastName         *string    `json:"last_name,omitempty" db:"last_name"`     // User's last name (optional, pointer for NULL)
+	BirthDate        *time.Time `json:"birth_date,omitempty" db:"birth_date"`   // User's date of birth (optional, pointer for NULL)
+	Nationality      *string    `json:"nationality,omitempty" db:"nationality"` // User's nationality (optional, pointer for NULL)
+	WhatsApp         string     `json:"whatsapp" db:"whatsapp"`                 // User's WhatsApp number, unique and required
+	CreatedAt        time.Time  `json:"created_at" db:"created_at"`             // Timestamp of user creation
+	UpdatedAt        time.Time  `json:"updated_at" db:"updated_at"`             // Timestamp of last user update
+	DeletedAt        *time.Time `json:"-" db:"deleted_at"`                      // Timestamp for soft delete (excluded from JSON)
+	StripeCustomerID *string    `json:"-" db:"stripe_customer_id"`              // Stripe Customer ID (optional, excluded from JSON)
+	ExpoPushToken    *string    `json:"-" db:"expo_push_token"`                 // Expo Push Token (optional, excluded from JSON)
+	HasPaymentMethod bool       `json:"has_payment_method"`                     // Calculated field indicating if Stripe Customer ID exists
 }
 
 // SignUpRequest defines the structure for user registration requests.
@@ -62,3 +65,9 @@ type UpdateProfileRequest struct {
 // Added basic validation tags using 'validate' struct tags.
 // Used pointers for optional fields in User struct and UpdateProfileRequest.
 // Excluded PasswordHash and DeletedAt from JSON responses using `json:"-"`.
+
+// UpdateLocationRequest defines the structure for updating the user's location.
+type UpdateLocationRequest struct {
+	Latitude  float64 `json:"latitude" validate:"required,latitude"`   // User's latitude
+	Longitude float64 `json:"longitude" validate:"required,longitude"` // User's longitude
+}

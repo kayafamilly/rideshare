@@ -81,7 +81,8 @@ func (h *RideHandler) CreateRide(c *fiber.Ctx) error {
 		} else if err.Error() == "departure date and time must be in the future" {
 			statusCode = http.StatusBadRequest
 			errorMessage = err.Error()
-		} else if err.Error() == "invalid departure date format (use YYYY-MM-DD)" || err.Error() == "invalid departure date or time format" {
+		} else if err.Error() == "invalid departure date format (use YYYY-MM-DD)" || err.Error() == "invalid departure date or time format" || err.Error() == "departure or arrival coordinates are missing" {
+			// Added check for missing coordinates error from service
 			statusCode = http.StatusBadRequest
 			errorMessage = err.Error()
 		}
@@ -407,6 +408,31 @@ func (h *RideHandler) ListUserJoinedRides(c *fiber.Ctx) error {
 	return c.Status(http.StatusOK).JSON(fiber.Map{"status": "success", "data": rides})
 }
 
+// ListUserHistoryRides handles GET /api/v1/users/me/rides/history
+// Requires authentication.
+func (h *RideHandler) ListUserHistoryRides(c *fiber.Ctx) error {
+	userID, ok := c.Locals("userID").(uuid.UUID)
+	if !ok { /* ... handle missing/invalid userID ... */
+		userIDStr, okStr := c.Locals("userID").(string)
+		if !okStr {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Unauthorized"})
+		}
+		parsedID, err := uuid.Parse(userIDStr)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Invalid ID"})
+		}
+		userID = parsedID
+	}
+
+	log.Printf("Received request for ride history for user %s", userID)
+	rides, err := h.rideService.ListUserHistoryRides(c.Context(), userID)
+	if err != nil { /* ... handle error ... */
+		log.Printf("Error fetching history rides for user %s: %v", userID, err)
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"status": "error", "message": "Failed to retrieve ride history"})
+	}
+	return c.Status(http.StatusOK).JSON(fiber.Map{"status": "success", "data": rides})
+}
+
 // DeleteRide handles DELETE /api/v1/rides/{id}
 // Requires authentication.
 func (h *RideHandler) DeleteRide(c *fiber.Ctx) error {
@@ -455,26 +481,30 @@ func (h *RideHandler) DeleteRide(c *fiber.Ctx) error {
 // Requires authentication.
 func (h *RideHandler) LeaveRide(c *fiber.Ctx) error {
 	userID, ok := c.Locals("userID").(uuid.UUID)
-	if !ok { /* ... handle missing/invalid userID ... */
+	if !ok {
 		userIDStr, okStr := c.Locals("userID").(string)
 		if !okStr {
+			log.Println("Error: User ID not found in context (LeaveRide)")
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Unauthorized"})
 		}
 		parsedID, err := uuid.Parse(userIDStr)
 		if err != nil {
+			log.Printf("Error: Invalid User ID format in context: %s", userIDStr)
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Invalid ID"})
 		}
 		userID = parsedID
 	}
 	rideIDParam := c.Params("id")
 	rideID, err := uuid.Parse(rideIDParam)
-	if err != nil { /* ... handle invalid ride ID ... */
+	if err != nil {
+		log.Printf("Invalid ride ID format in URL parameter for leave request: %s", rideIDParam)
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"status": "error", "message": "Invalid ride ID format"})
 	}
 
 	log.Printf("Received leave request for ride %s from user %s", rideID, userID)
 	err = h.rideService.LeaveRide(c.Context(), rideID, userID)
-	if err != nil { /* ... handle service error (not found, already left, db error) ... */
+	if err != nil {
+		log.Printf("Error leaving ride %s for user %s: %v", rideID, userID, err)
 		statusCode := http.StatusInternalServerError
 		message := "Failed to leave ride"
 		errMsg := err.Error()
@@ -486,6 +516,48 @@ func (h *RideHandler) LeaveRide(c *fiber.Ctx) error {
 	}
 
 	return c.Status(http.StatusOK).JSON(fiber.Map{"status": "success", "message": "Successfully left the ride."})
+}
+
+// GetMyParticipationStatus handles GET /api/v1/rides/{id}/my-status
+// Requires authentication.
+func (h *RideHandler) GetMyParticipationStatus(c *fiber.Ctx) error {
+	// 1. Get authenticated user ID
+	userID, ok := c.Locals("userID").(uuid.UUID)
+	if !ok {
+		userIDStr, okStr := c.Locals("userID").(string)
+		if !okStr {
+			log.Println("Error: User ID not found in context (GetMyParticipationStatus)")
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Unauthorized: Missing user identification."})
+		}
+		parsedID, err := uuid.Parse(userIDStr)
+		if err != nil {
+			log.Printf("Error: Invalid User ID format in context: %s", userIDStr)
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Unauthorized: Invalid user identification format."})
+		}
+		userID = parsedID
+	}
+
+	// 2. Get ride ID from URL parameter
+	rideIDParam := c.Params("id")
+	rideID, err := uuid.Parse(rideIDParam)
+	if err != nil {
+		log.Printf("Invalid ride ID format in URL parameter for status request: %s", rideIDParam)
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"status": "error", "message": "Invalid ride ID format"})
+	}
+
+	log.Printf("Received request for participation status for user %s on ride %s", userID, rideID)
+
+	// 3. Call service to get status
+	status, err := h.rideService.GetUserParticipationStatus(c.Context(), rideID, userID)
+	if err != nil {
+		log.Printf("Error fetching participation status for user %s, ride %s: %v", userID, rideID, err)
+		// Don't expose internal DB errors directly
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"status": "error", "message": "Failed to retrieve participation status"})
+	}
+
+	// 4. Return status
+	log.Printf("Returning participation status '%s' for user %s on ride %s", status, userID, rideID)
+	return c.Status(http.StatusOK).JSON(fiber.Map{"status": "success", "data": fiber.Map{"participation_status": status}})
 }
 
 // SetupRideRoutes registers the ride-related routes with the Fiber app group.
@@ -510,6 +582,9 @@ func SetupRideRoutes(api fiber.Router, rideService *services.RideService, authMi
 	userRideGroup := api.Group("/users/me/rides", authMiddleware)
 	userRideGroup.Get("/created", handler.ListUserCreatedRides)
 	userRideGroup.Get("/joined", handler.ListUserJoinedRides)
+	userRideGroup.Get("/history", handler.ListUserHistoryRides) // Add history route
+	// Add route for participation status under rides group
+	rideGroup.Get("/:id/my-status", handler.GetMyParticipationStatus)
 
 	log.Println("Ride related routes setup complete.")
 }

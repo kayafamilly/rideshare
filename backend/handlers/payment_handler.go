@@ -1,8 +1,8 @@
 package handlers
 
 import (
-	"fmt" // Import fmt
-	"log"
+	"fmt"      // Import fmt
+	"log"      // For error checking
 	"net/http" // For status codes and request object
 
 	"github.com/gofiber/fiber/v2"
@@ -92,6 +92,122 @@ func (h *PaymentHandler) CreatePaymentIntent(c *fiber.Ctx) error {
 	})
 }
 
+// CreateSetupIntent handles POST /api/v1/payments/setup-intent
+// Requires authentication.
+func (h *PaymentHandler) CreateSetupIntent(c *fiber.Ctx) error {
+	// 1. Get authenticated user ID from context
+	userID, ok := c.Locals("userID").(uuid.UUID)
+	if !ok {
+		userIDStr, okStr := c.Locals("userID").(string)
+		if !okStr {
+			log.Println("Error: User ID not found in context (CreateSetupIntent)")
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Unauthorized: Missing user identification."})
+		}
+		parsedID, err := uuid.Parse(userIDStr)
+		if err != nil {
+			log.Printf("Error: Invalid User ID format in context: %s", userIDStr)
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Unauthorized: Invalid user identification format."})
+		}
+		userID = parsedID
+	}
+
+	log.Printf("Received create setup intent request from user %s", userID)
+
+	// 2. Call service to create setup intent
+	response, err := h.paymentService.CreateSetupIntent(c.Context(), userID)
+	if err != nil {
+		log.Printf("Error creating setup intent for user %s: %v", userID, err)
+		statusCode := http.StatusInternalServerError
+		errorMessage := "Failed to create setup intent"
+		// Use errors.Is for specific error checking if the service returns wrapped errors, e.g.:
+		// if errors.Is(err, services.ErrUserNotFound) { ... }
+		if err.Error() == "user not found" { // Simple string comparison used here
+			statusCode = http.StatusNotFound
+			errorMessage = err.Error()
+		}
+		// Add more specific error handling if needed
+		return c.Status(statusCode).JSON(fiber.Map{"status": "error", "message": errorMessage})
+	}
+
+	// 3. Return successful response with client secret and customer ID
+	log.Printf("Setup intent created successfully for user %s. Customer ID: %s", userID, response.CustomerID)
+	return c.Status(http.StatusOK).JSON(fiber.Map{
+		"status":  "success",
+		"message": "Setup intent created successfully",
+		"data":    response, // Contains client_secret, customer_id
+	})
+}
+
+// JoinRideAutomatically handles POST /api/v1/rides/:ride_id/join-automatic
+// Requires authentication and saved payment method.
+func (h *PaymentHandler) JoinRideAutomatically(c *fiber.Ctx) error {
+	// 1. Get authenticated user ID from context
+	userID, ok := c.Locals("userID").(uuid.UUID)
+	if !ok {
+		userIDStr, okStr := c.Locals("userID").(string)
+		if !okStr {
+			log.Println("Error: User ID not found in context (JoinRideAutomatically)")
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Unauthorized: Missing user identification."})
+		}
+		parsedID, err := uuid.Parse(userIDStr)
+		if err != nil {
+			log.Printf("Error: Invalid User ID format in context: %s", userIDStr)
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Unauthorized: Invalid user identification format."})
+		}
+		userID = parsedID
+	}
+
+	// 2. Get ride ID from URL parameter
+	rideIDParam := c.Params("ride_id")
+	rideID, err := uuid.Parse(rideIDParam)
+	if err != nil {
+		log.Printf("Invalid ride ID format in URL parameter for automatic join: %s", rideIDParam)
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"status": "error", "message": "Invalid ride ID format"})
+	}
+
+	log.Printf("Received automatic join request from user %s for ride %s", userID, rideID)
+
+	// 3. Call service to handle automatic join and payment
+	err = h.paymentService.JoinRideAutomatically(c.Context(), rideID, userID)
+	if err != nil {
+		log.Printf("Error during automatic join for user %s, ride %s: %v", userID, rideID, err)
+		statusCode := http.StatusInternalServerError
+		errorMessage := "Failed to join ride automatically"
+
+		// Handle specific errors from the service
+		errMsg := err.Error()
+		// TODO: Use errors.Is or specific error types if defined in service
+		switch errMsg {
+		case "user not found":
+			statusCode = http.StatusNotFound
+			errorMessage = errMsg
+		case "ride is full", "already joined", "cannot join your own ride": // Add other validation errors from service
+			statusCode = http.StatusConflict // 409 Conflict for business logic errors
+			errorMessage = errMsg
+		case "user has no saved payment method setup":
+			statusCode = http.StatusPaymentRequired // 402 Payment Required might be suitable
+			errorMessage = errMsg
+		case "payment failed": // Catch generic payment failure from service
+			statusCode = http.StatusConflict // Or 400 Bad Request? Conflict seems okay.
+			errorMessage = "Payment using saved method failed. Please update your payment details."
+		case "critical error: payment processed but failed to update records":
+			// This is a serious internal error, return 500 but log it critically
+			errorMessage = "An internal error occurred while finalizing your participation."
+		default:
+			// Keep 500 for other unexpected errors
+		}
+
+		return c.Status(statusCode).JSON(fiber.Map{"status": "error", "message": errorMessage})
+	}
+
+	// 4. Return successful response
+	log.Printf("Automatic join successful for user %s, ride %s", userID, rideID)
+	return c.Status(http.StatusOK).JSON(fiber.Map{
+		"status":  "success",
+		"message": "Successfully joined ride and payment processed.",
+	})
+}
+
 // HandleStripeWebhook is the conceptual handler for POST /api/v1/stripe-webhook
 // The actual route registration in main.go needs to adapt this to a standard http.HandlerFunc.
 func (h *PaymentHandler) HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
@@ -128,16 +244,18 @@ func (h *PaymentHandler) HandleStripeWebhook(w http.ResponseWriter, r *http.Requ
 func SetupPaymentRoutes(api fiber.Router, paymentService *services.PaymentService, authMiddleware fiber.Handler) {
 	handler := NewPaymentHandler(paymentService)
 
-	// Route for creating payment intent (protected)
+	// Group for payment related routes under /payments
+	paymentGroup := api.Group("/payments")
+
+	// Route for creating setup intent (protected)
+	paymentGroup.Post("/setup-intent", authMiddleware, handler.CreateSetupIntent)
+
+	// Route for creating payment intent (protected) - Keep under /rides for context? Or move to /payments?
 	// POST /api/v1/rides/:ride_id/create-payment-intent
-	api.Post("/rides/:ride_id/create-payment-intent", authMiddleware, handler.CreatePaymentIntent)
+	api.Post("/rides/:ride_id/create-payment-intent", authMiddleware, handler.CreatePaymentIntent) // For manual payment flow if needed later?
+	api.Post("/rides/:ride_id/join-automatic", authMiddleware, handler.JoinRideAutomatically)      // New route for automatic payment
 
-	// Route for Stripe Webhook (public)
-	// This route registration will be different in main.go using adaptor.HTTPHandler
-	// The handler logic is defined above in HandleStripeWebhook (as http.HandlerFunc).
-	// We don't register it directly on the Fiber router here.
-
-	log.Println("Payment routes (/rides/:ride_id/create-payment-intent) setup complete.")
+	log.Println("Payment routes (/payments/setup-intent, /rides/:ride_id/create-payment-intent, /rides/:ride_id/join-automatic) setup complete.")
 	log.Println("Webhook route (/stripe-webhook) requires special registration in main.go using adaptor.HTTPHandler.")
 
 }

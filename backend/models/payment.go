@@ -49,3 +49,9 @@ type CreatePaymentIntentResponse struct {
 	// Add publishable key if not already available on frontend? Usually set during init.
 	// StripePublicKey string `json:"stripe_public_key"`
 }
+
+// CreateSetupIntentResponse defines the data sent back for setting up a payment method.
+type CreateSetupIntentResponse struct {
+	ClientSecret string `json:"client_secret"` // The client secret of the SetupIntent
+	CustomerID   string `json:"customer_id"`   // The Stripe Customer ID
+}

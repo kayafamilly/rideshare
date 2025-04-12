@@ -1,6 +1,6 @@
 // frontend/screens/ProfileScreen.js
-import React, { useState, useEffect } from 'react'; // Import useState, useEffect
-import { View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView } from 'react-native'; // Added ScrollView
+import React, { useState, useEffect, useCallback } from 'react'; // Import useState, useEffect, useCallback
+import { View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView, Platform } from 'react-native'; // Added ScrollView and Platform
 import { useAuth } from '../contexts/AuthContext'; // To get user info
 import { authService } from '../services/api'; // Import authService for updateProfile
 import Button from '../components/Button'; // Import Button component
@@ -21,7 +21,6 @@ const ProfileScreen = () => {
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [birthDate, setBirthDate] = useState(''); // Store as YYYY-MM-DD string for input
-  const [nationality, setNationality] = useState(''); // Stores the string value
   const [whatsapp, setWhatsapp] = useState('');
   // States for pickers
   const [showBirthDatePicker, setShowBirthDatePicker] = useState(false);
@@ -30,16 +29,22 @@ const ProfileScreen = () => {
 
   // Effect to initialize form state when user data is available/changes
   useEffect(() => {
-    if (user) {
+    if (user) { // <-- ADDED THIS CHECK
       setFirstName(user.first_name || '');
       setLastName(user.last_name || '');
       setBirthDate(user.birth_date ? user.birth_date.split('T')[0] : ''); // Format to YYYY-MM-DD
-      setNationality(user.nationality || '');
+      // Removed: setNationality(user.nationality || '');
       setWhatsapp(user.whatsapp || '');
+      // Initialize picker value if user has nationality
+      setNationalityValue(user.nationality || null); // Now safe
+    } else {
+      // Optional: Reset if user logs out
+      setFirstName('');
+      setLastName('');
+      setBirthDate('');
+      setNationalityValue(null);
+      setWhatsapp('');
     }
-    // Initialize picker value if user has nationality
-    setNationalityValue(user.nationality || null);
-
   }, [user]); // Re-run when user object changes
 
   // Add state for nationality picker value separate from the text input state
@@ -177,7 +182,7 @@ const ProfileScreen = () => {
                      testID="birthDatePicker"
                      value={birthDate ? new Date(birthDate + 'T00:00:00') : new Date()} // Ensure valid Date object
                      mode="date"
-                     display="default"
+                     display={Platform.OS === 'ios' ? 'spinner' : 'default'} // Use spinner on iOS
                      onChange={onBirthDateChange}
                      maximumDate={new Date(Date.now() - 18 * 365 * 24 * 60 * 60 * 1000)}
                    />

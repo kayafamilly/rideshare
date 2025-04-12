@@ -14,6 +14,7 @@ import (
 	"rideshare/backend/services"   // Local services package
 
 	"github.com/stripe/stripe-go/v72" // Stripe Go client (adjust version if needed)
+	// webhook package is needed by payment_service, not directly here if using adaptor
 )
 
 // main is the entry point of the application.
@@ -52,7 +53,8 @@ func main() {
 	authService := services.NewAuthService(cfg)
 	// Pass the database pool interface to NewRideService
 	rideService := services.NewRideService(database.DB)
-	paymentService := services.NewPaymentService(cfg, database.DB)
+	stripeService := services.NewStripeServiceImpl()                                           // Create real Stripe service implementation
+	paymentService := services.NewPaymentService(cfg, database.DB, rideService, stripeService) // Inject rideService and stripeService
 
 	// --- Setup middleware ---
 	authMiddleware := middleware.Protected(cfg) // Create auth middleware instance
@@ -60,14 +62,15 @@ func main() {
 	// --- Setup routes ---
 	handlers.SetupAuthRoutes(apiV1, authService)
 	handlers.SetupRideRoutes(apiV1, rideService, authMiddleware)
-	handlers.SetupPaymentRoutes(apiV1, paymentService, authMiddleware)
-	handlers.SetupUserRoutes(apiV1, authService, authMiddleware) // Add user routes
+	handlers.SetupPaymentRoutes(apiV1, paymentService, authMiddleware) // This sets up payment routes EXCEPT webhook
+	handlers.SetupUserRoutes(apiV1, authService, authMiddleware)       // Add user routes
+
 	// --- Setup Stripe Webhook Route using net/http adaptor ---
 	// Create a separate http handler instance for the webhook
 	webhookHandler := handlers.NewPaymentHandler(paymentService) // Need instance for method reference
 	// Adapt the http.HandlerFunc to Fiber's handler type
 	// The path MUST match the one configured in your Stripe dashboard
-	app.Post("/api/v1/stripe-webhook", adaptor.HTTPHandlerFunc(webhookHandler.HandleStripeWebhook))
+	app.Post("/api/v1/stripe-webhook", adaptor.HTTPHandlerFunc(webhookHandler.HandleStripeWebhook)) // Use the adaptor
 	log.Println("Stripe webhook route (/api/v1/stripe-webhook) registered using adaptor.")
 
 	// Use port from configuration

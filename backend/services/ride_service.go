@@ -20,14 +20,13 @@ import (
 type RideService struct {
 	validator *validator.Validate
 	db        database.DBPool // Use the DBPool interface
-	// Add other dependencies if needed, e.g., notification service
 }
 
 // NewRideService creates a new RideService instance.
 func NewRideService(db database.DBPool) *RideService {
 	return &RideService{
 		validator: validator.New(),
-		db:        db, // Store the db pool/mock
+		db:        db,
 	}
 }
 
@@ -38,6 +37,11 @@ func (s *RideService) CreateRide(ctx context.Context, req models.CreateRideReque
 		log.Printf("Validation error creating ride for user %s: %v", userID, err)
 		return nil, fmt.Errorf("invalid ride data: %w", err)
 	}
+	// Ensure coordinates are provided in the request
+	if req.DepartureCoords == nil || req.ArrivalCoords == nil {
+		log.Printf("Error creating ride for user %s: Departure or Arrival coordinates are missing in request", userID)
+		return nil, errors.New("departure or arrival coordinates are required")
+	}
 
 	// 2. Parse date and time strings
 	departureDate, err := time.Parse("2006-01-02", req.DepartureDate)
@@ -45,49 +49,50 @@ func (s *RideService) CreateRide(ctx context.Context, req models.CreateRideReque
 		log.Printf("Error parsing departure date '%s' for user %s: %v", req.DepartureDate, userID, err)
 		return nil, fmt.Errorf("invalid departure date format (use YYYY-MM-DD): %w", err)
 	}
-	// Note: We store time as string HH:MM, matching the DB TIME type. No parsing needed here for insertion.
-	// Ensure the input format is validated (done via validator tag 'datetime=15:04').
 
-	// Basic check: Departure date/time should be in the future (optional but good practice)
-	// Combine date and time for comparison (assuming local timezone for simplicity)
-	// More robust timezone handling might be needed.
-	// Use current date if only time is provided? For now, require full date/time string.
-	// Let's refine this logic: Combine parsed date with HH:MM time string.
-	layout := "2006-01-02 15:04" // Layout for parsing combined date and time
+	// 3. Validate departure time is in the future
+	layout := "2006-01-02 15:04"
 	departureDateTimeStr := fmt.Sprintf("%s %s", req.DepartureDate, req.DepartureTime)
 	departureDateTime, err := time.Parse(layout, departureDateTimeStr)
-	// Consider server's local timezone. If times are meant to be UTC, adjust parsing/storage.
-	// For simplicity, assume server time is the reference for "now".
 	if err != nil {
-		// This shouldn't happen if date and time formats are validated correctly, but handle defensively.
 		log.Printf("Error combining departure date and time '%s %s' for user %s: %v", req.DepartureDate, req.DepartureTime, userID, err)
 		return nil, fmt.Errorf("invalid departure date or time format: %w", err)
 	}
-
 	if departureDateTime.Before(time.Now()) {
 		log.Printf("Validation error: Departure date/time %s is in the past for user %s", departureDateTime, userID)
 		return nil, errors.New("departure date and time must be in the future")
 	}
 
-	// 3. Create the ride in the database
+	// 4. Create the ride in the database
 	newRide := &models.Ride{
-		ID:            uuid.New(),
-		UserID:        userID,
-		StartLocation: req.StartLocation,
-		EndLocation:   req.EndLocation,
-		DepartureDate: departureDate,                   // Store the parsed date
-		DepartureTime: req.DepartureTime,               // Store the HH:MM string
-		TotalSeats:    req.TotalSeats,                  // Use TotalSeats from request
-		Status:        string(models.RideStatusActive), // Default status is 'active' (string)
+		ID:                    uuid.New(),
+		UserID:                userID,
+		DepartureLocationName: req.DepartureLocationName,
+		DepartureCoords:       req.DepartureCoords,
+		ArrivalLocationName:   req.ArrivalLocationName,
+		ArrivalCoords:         req.ArrivalCoords,
+		DepartureDate:         departureDate,
+		DepartureTime:         req.DepartureTime,
+		TotalSeats:            req.TotalSeats,
+		Status:                string(models.RideStatusActive),
 	}
 
+	// Use ST_SetSRID(ST_MakePoint(longitude, latitude), 4326) for inserting coordinates
 	insertQuery := `
-		INSERT INTO rides (id, user_id, start_location, end_location, departure_date, departure_time, total_seats, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO rides (
+			id, user_id,
+			departure_location_name, departure_coords,
+			arrival_location_name, arrival_coords,
+			departure_date, departure_time, total_seats, status
+		)
+		VALUES ($1, $2, $3, ST_SetSRID(ST_MakePoint($4, $5), 4326), $6, ST_SetSRID(ST_MakePoint($7, $8), 4326), $9, $10, $11, $12)
 		RETURNING created_at, updated_at
 	`
-	err = s.db.QueryRow(ctx, insertQuery, // Use s.db
-		newRide.ID, newRide.UserID, newRide.StartLocation, newRide.EndLocation, newRide.DepartureDate, newRide.DepartureTime, newRide.TotalSeats, newRide.Status,
+	err = s.db.QueryRow(ctx, insertQuery,
+		newRide.ID, newRide.UserID,
+		newRide.DepartureLocationName, newRide.DepartureCoords.Longitude, newRide.DepartureCoords.Latitude, // Lon, Lat for departure
+		newRide.ArrivalLocationName, newRide.ArrivalCoords.Longitude, newRide.ArrivalCoords.Latitude, // Lon, Lat for arrival
+		newRide.DepartureDate, newRide.DepartureTime, newRide.TotalSeats, newRide.Status,
 	).Scan(&newRide.CreatedAt, &newRide.UpdatedAt)
 
 	if err != nil {
@@ -99,21 +104,83 @@ func (s *RideService) CreateRide(ctx context.Context, req models.CreateRideReque
 	return newRide, nil
 }
 
-// ListAvailableRides retrieves a list of rides that are currently 'open'.
-// TODO: Add filtering (by date, location) and pagination.
+// scanRideRow scans a row from a rides query into a models.Ride struct, handling coordinates.
+func scanRideRow(rows pgx.Row) (*models.Ride, error) {
+	var ride models.Ride
+	var depLon, depLat, arrLon, arrLat *float64 // Use pointers to handle potential NULLs from LEFT JOINs or if coords aren't selected
+
+	// Adjust scan arguments based on the specific query's SELECT list
+	// This example assumes all standard fields + coordinates + creator name + places taken are selected
+	err := rows.Scan(
+		&ride.ID, &ride.UserID,
+		&ride.DepartureLocationName, &depLon, &depLat,
+		&ride.ArrivalLocationName, &arrLon, &arrLat,
+		&ride.DepartureDate, &ride.DepartureTime, &ride.TotalSeats,
+		&ride.Status, &ride.CreatedAt, &ride.UpdatedAt,
+		&ride.PlacesTaken,      // Assumes this is calculated/selected in the query
+		&ride.CreatorFirstName, // Assumes this is joined/selected in the query
+	)
+	if err != nil {
+		return nil, err // Return scan error directly
+	}
+
+	// Populate GeoPoint structs if coordinates were scanned successfully
+	if depLon != nil && depLat != nil {
+		ride.DepartureCoords = &models.GeoPoint{Longitude: *depLon, Latitude: *depLat}
+	}
+	if arrLon != nil && arrLat != nil {
+		ride.ArrivalCoords = &models.GeoPoint{Longitude: *arrLon, Latitude: *arrLat}
+	}
+	return &ride, nil
+}
+
+// scanRideRowBasic scans a row with basic ride details + coordinates + creator name
+func scanRideRowBasic(row pgx.Row) (*models.Ride, error) {
+	var ride models.Ride
+	var depLon, depLat, arrLon, arrLat *float64
+
+	err := row.Scan(
+		&ride.ID, &ride.UserID,
+		&ride.DepartureLocationName, &depLon, &depLat,
+		&ride.ArrivalLocationName, &arrLon, &arrLat,
+		&ride.DepartureDate, &ride.DepartureTime, &ride.TotalSeats,
+		&ride.Status,
+		&ride.CreatedAt, &ride.UpdatedAt,
+		&ride.CreatorFirstName, // Assumes creator name is joined
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if depLon != nil && depLat != nil {
+		ride.DepartureCoords = &models.GeoPoint{Longitude: *depLon, Latitude: *depLat}
+	}
+	if arrLon != nil && arrLat != nil {
+		ride.ArrivalCoords = &models.GeoPoint{Longitude: *arrLon, Latitude: *arrLat}
+	}
+	return &ride, nil
+}
+
+// ListAvailableRides retrieves a list of rides that are currently 'active'.
 func (s *RideService) ListAvailableRides(ctx context.Context) ([]models.Ride, error) {
 	rides := []models.Ride{}
-	// Query only for 'open' rides, order by departure date/time
-	// Also filter out rides where the combined date and time is in the past
 	query := `
-		SELECT id, user_id, start_location, end_location, departure_date, departure_time, total_seats, status, created_at, updated_at
-		FROM rides
-		WHERE status = $1 AND (departure_date > current_date OR (departure_date = current_date AND departure_time > current_time))
-		ORDER BY departure_date ASC, departure_time ASC
+		SELECT
+			r.id, r.user_id,
+			r.departure_location_name, ST_X(r.departure_coords) AS departure_lon, ST_Y(r.departure_coords) AS departure_lat,
+			r.arrival_location_name, ST_X(r.arrival_coords) AS arrival_lon, ST_Y(r.arrival_coords) AS arrival_lat,
+			r.departure_date, r.departure_time, r.total_seats, r.status, r.created_at, r.updated_at,
+			(SELECT COUNT(*) FROM participants p WHERE p.ride_id = r.id AND p.status = 'active') AS places_taken,
+			u.first_name AS creator_first_name
+		FROM rides r
+		JOIN users u ON r.user_id = u.id
+		WHERE r.status = $1
+		  AND (r.departure_date > current_date OR (r.departure_date = current_date AND r.departure_time > current_time))
+		  AND (SELECT COUNT(*) FROM participants p WHERE p.ride_id = r.id AND p.status = 'active') < r.total_seats
+		ORDER BY r.departure_date ASC, r.departure_time ASC
 	`
-	// Note: Using current_date and current_time relies on the database server's time.
 
-	rows, err := s.db.Query(ctx, query, string(models.RideStatusActive)) // Use s.db and new status
+	rows, err := s.db.Query(ctx, query, string(models.RideStatusActive))
 	if err != nil {
 		log.Printf("Error querying available rides: %v", err)
 		return nil, fmt.Errorf("database error fetching rides: %w", err)
@@ -121,23 +188,16 @@ func (s *RideService) ListAvailableRides(ctx context.Context) ([]models.Ride, er
 	defer rows.Close()
 
 	for rows.Next() {
-		var ride models.Ride
-		// Scan each column into the Ride struct fields
-		err := rows.Scan(
-			&ride.ID, &ride.UserID, &ride.StartLocation, &ride.EndLocation,
-			&ride.DepartureDate, &ride.DepartureTime, &ride.TotalSeats, // Use TotalSeats
-			&ride.Status, &ride.CreatedAt, &ride.UpdatedAt,
-		)
+		ride, err := scanRideRow(rows) // Use the helper function
 		if err != nil {
-			log.Printf("Error scanning ride row: %v", err)
-			// Decide whether to return partial results or error out
+			log.Printf("Error scanning available ride row: %v", err)
 			return nil, fmt.Errorf("error processing ride data: %w", err)
 		}
-		rides = append(rides, ride)
+		rides = append(rides, *ride)
 	}
 
 	if err = rows.Err(); err != nil {
-		log.Printf("Error after iterating ride rows: %v", err)
+		log.Printf("Error after iterating available ride rows: %v", err)
 		return nil, fmt.Errorf("database iteration error: %w", err)
 	}
 
@@ -146,20 +206,20 @@ func (s *RideService) ListAvailableRides(ctx context.Context) ([]models.Ride, er
 }
 
 // GetRideDetails retrieves details for a specific ride by its ID.
-// TODO: Optionally join with users table to get creator details.
 func (s *RideService) GetRideDetails(ctx context.Context, rideID uuid.UUID) (*models.Ride, error) {
-	var ride models.Ride
 	query := `
-		SELECT id, user_id, start_location, end_location, departure_date, departure_time, total_seats, status, created_at, updated_at
-		FROM rides
-		WHERE id = $1
+		SELECT
+			r.id, r.user_id,
+			r.departure_location_name, ST_X(r.departure_coords) AS departure_lon, ST_Y(r.departure_coords) AS departure_lat,
+			r.arrival_location_name, ST_X(r.arrival_coords) AS arrival_lon, ST_Y(r.arrival_coords) AS arrival_lat,
+			r.departure_date, r.departure_time, r.total_seats, r.status,
+			r.created_at, r.updated_at,
+			u.first_name AS creator_first_name
+		FROM rides r
+		JOIN users u ON r.user_id = u.id
+		WHERE r.id = $1
 	`
-	err := s.db.QueryRow(ctx, query, rideID).Scan( // Use s.db
-		&ride.ID, &ride.UserID, &ride.StartLocation, &ride.EndLocation,
-		&ride.DepartureDate, &ride.DepartureTime, &ride.TotalSeats, // Use TotalSeats
-		&ride.Status, &ride.CreatedAt, &ride.UpdatedAt,
-	)
-
+	ride, err := scanRideRowBasic(s.db.QueryRow(ctx, query, rideID)) // Use basic scanner
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			log.Printf("Ride not found: ID %s", rideID)
@@ -169,46 +229,46 @@ func (s *RideService) GetRideDetails(ctx context.Context, rideID uuid.UUID) (*mo
 		return nil, fmt.Errorf("database error fetching ride details: %w", err)
 	}
 
-	log.Printf("Fetched details for ride ID %s", rideID)
-	return &ride, nil
+	// Calculate places taken separately
+	var activeParticipantsCount int
+	countQuery := `SELECT COUNT(*) FROM participants WHERE ride_id = $1 AND status = $2`
+	err = s.db.QueryRow(ctx, countQuery, rideID, string(models.ParticipantStatusActive)).Scan(&activeParticipantsCount)
+	if err != nil {
+		log.Printf("Error counting active participants for ride %s during GetRideDetails: %v", rideID, err)
+		ride.PlacesTaken = 0 // Fallback
+	} else {
+		ride.PlacesTaken = activeParticipantsCount
+	}
+
+	log.Printf("Fetched details for ride ID %s (Places Taken: %d)", rideID, ride.PlacesTaken)
+	return ride, nil
 }
 
 // JoinRide allows a user to join an existing ride.
-// This creates a 'participant' record with 'pending_payment' status.
 func (s *RideService) JoinRide(ctx context.Context, rideID uuid.UUID, userID uuid.UUID) (*models.Participant, error) {
-	// Check if the database pool supports transactions. pgxpool.Pool does.
 	pool, ok := s.db.(*pgxpool.Pool)
 	if !ok {
-		// If using a mock or a DB type that doesn't support transactions, handle it.
-		// For tests with pgxmock, transactions need specific expectation setup.
-		// For now, assume we need a real pool or a mock supporting transactions.
 		log.Println("Warning: Database pool does not support transactions, proceeding without.")
-		// Fallback to non-transactional logic or return error? For safety, return error.
 		return nil, errors.New("database does not support transactions required for JoinRide")
-		// OR: Implement non-transactional version (less safe for concurrency)
 	}
 
-	// --- Transaction Start ---
-	tx, err := pool.Begin(ctx) // Use the asserted pool to begin transaction
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		log.Printf("Error starting transaction for joining ride %s by user %s: %v", rideID, userID, err)
 		return nil, fmt.Errorf("failed to start database transaction: %w", err)
 	}
-	// Defer rollback in case of errors, commit will override if successful.
 	defer tx.Rollback(ctx)
 
-	// 1. Get ride details and lock the row for update (to prevent race conditions on available_seats)
+	// 1. Get ride details and lock the row (only need fields for validation)
 	var ride models.Ride
 	lockQuery := `
-		SELECT id, user_id, start_location, end_location, departure_date, departure_time, total_seats, status
+		SELECT id, user_id, total_seats, status
 		FROM rides
 		WHERE id = $1
 		FOR UPDATE
 	`
-	// Use tx for operations within the transaction
 	err = tx.QueryRow(ctx, lockQuery, rideID).Scan(
-		&ride.ID, &ride.UserID, &ride.StartLocation, &ride.EndLocation,
-		&ride.DepartureDate, &ride.DepartureTime, &ride.TotalSeats, &ride.Status, // Use TotalSeats
+		&ride.ID, &ride.UserID, &ride.TotalSeats, &ride.Status,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -220,13 +280,11 @@ func (s *RideService) JoinRide(ctx context.Context, rideID uuid.UUID, userID uui
 	}
 
 	// 2. Check ride status and availability
-	// Check ride status (must be active)
 	if ride.Status != string(models.RideStatusActive) {
 		log.Printf("JoinRide failed: Ride %s is not active (status: %s)", rideID, ride.Status)
 		return nil, errors.New("ride is not active for joining")
 	}
 
-	// Check if ride is full by comparing total seats with current active participants
 	var activeParticipantsCount int
 	countQuery := `SELECT COUNT(*) FROM participants WHERE ride_id = $1 AND status = $2`
 	err = tx.QueryRow(ctx, countQuery, rideID, string(models.ParticipantStatusActive)).Scan(&activeParticipantsCount)
@@ -237,7 +295,6 @@ func (s *RideService) JoinRide(ctx context.Context, rideID uuid.UUID, userID uui
 
 	if activeParticipantsCount >= ride.TotalSeats {
 		log.Printf("JoinRide failed: Ride %s is full (%d/%d seats taken)", rideID, activeParticipantsCount, ride.TotalSeats)
-		// Optionally update status to 'archived' or similar if needed, but not 'full' status anymore
 		return nil, errors.New("ride is already full")
 	}
 	if ride.UserID == userID {
@@ -245,32 +302,56 @@ func (s *RideService) JoinRide(ctx context.Context, rideID uuid.UUID, userID uui
 		return nil, errors.New("you cannot join your own ride")
 	}
 
-	// 3. Check if user has already joined this ride
-	var existingParticipantID uuid.UUID
-	checkParticipantQuery := `SELECT id FROM participants WHERE user_id = $1 AND ride_id = $2`
-	err = tx.QueryRow(ctx, checkParticipantQuery, userID, rideID).Scan(&existingParticipantID)
-	if err == nil { // If scan succeeds, a record exists
-		log.Printf("JoinRide failed: User %s has already joined ride %s (Participant ID: %s)", userID, rideID, existingParticipantID)
-		return nil, errors.New("you have already joined this ride")
-	} else if !errors.Is(err, pgx.ErrNoRows) { // If it's an error other than 'no rows'
+	// 3. Check existing participation
+	var existingParticipant models.Participant
+	checkParticipantQuery := `SELECT id, status FROM participants WHERE user_id = $1 AND ride_id = $2`
+	err = tx.QueryRow(ctx, checkParticipantQuery, userID, rideID).Scan(&existingParticipant.ID, &existingParticipant.Status)
+
+	if err == nil { // Record found
+		switch existingParticipant.Status {
+		case string(models.ParticipantStatusActive), string(models.ParticipantStatusPendingPayment):
+			log.Printf("JoinRide failed: User %s has already joined ride %s with status '%s'", userID, rideID, existingParticipant.Status)
+			return nil, errors.New("you have already joined this ride or payment is pending")
+		case string(models.ParticipantStatusLeft):
+			log.Printf("User %s previously left ride %s. Updating status to pending_payment.", userID, rideID)
+			updateStatusQuery := `UPDATE participants SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING created_at, updated_at` // Also return timestamps
+			updateErr := tx.QueryRow(ctx, updateStatusQuery, string(models.ParticipantStatusPendingPayment), existingParticipant.ID).Scan(&existingParticipant.CreatedAt, &existingParticipant.UpdatedAt)
+			if updateErr != nil {
+				log.Printf("Error updating status for rejoining participant %s on ride %s: %v", userID, rideID, updateErr)
+				return nil, fmt.Errorf("failed to update participation status for rejoin: %w", updateErr)
+			}
+			existingParticipant.Status = string(models.ParticipantStatusPendingPayment)
+			existingParticipant.UserID = userID // Ensure UserID and RideID are set
+			existingParticipant.RideID = rideID
+			// Commit transaction after successful update
+			commitErr := tx.Commit(ctx)
+			if commitErr != nil {
+				log.Printf("Error committing transaction after rejoining ride %s by user %s: %v", rideID, userID, commitErr)
+				return nil, fmt.Errorf("failed to finalize rejoining ride: %w", commitErr)
+			}
+			return &existingParticipant, nil
+		default:
+			log.Printf("JoinRide failed: User %s has an unexpected participation status '%s' for ride %s", userID, rideID, existingParticipant.Status)
+			return nil, fmt.Errorf("unexpected participation status: %s", existingParticipant.Status)
+		}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
 		log.Printf("Error checking existing participation for user %s on ride %s: %v", userID, rideID, err)
 		return nil, fmt.Errorf("database error checking participation: %w", err)
 	}
-	// If err is pgx.ErrNoRows, proceed.
 
-	// 4. Create the participant record
+	// 4. Create NEW participant record
 	newParticipant := &models.Participant{
 		ID:     uuid.New(),
 		UserID: userID,
 		RideID: rideID,
-		Status: string(models.ParticipantStatusPendingPayment), // Initial status (string)
+		Status: string(models.ParticipantStatusPendingPayment),
 	}
 	insertParticipantQuery := `
 		INSERT INTO participants (id, user_id, ride_id, status)
 		VALUES ($1, $2, $3, $4)
 		RETURNING created_at, updated_at
 	`
-	err = tx.QueryRow(ctx, insertParticipantQuery, // Use tx
+	err = tx.QueryRow(ctx, insertParticipantQuery,
 		newParticipant.ID, newParticipant.UserID, newParticipant.RideID, newParticipant.Status,
 	).Scan(&newParticipant.CreatedAt, &newParticipant.UpdatedAt)
 	if err != nil {
@@ -278,10 +359,7 @@ func (s *RideService) JoinRide(ctx context.Context, rideID uuid.UUID, userID uui
 		return nil, fmt.Errorf("failed to record participation: %w", err)
 	}
 
-	// 5. No need to decrement seats anymore, it's calculated.
-	//    We might update the ride's updated_at timestamp, but it's already handled by the trigger.
-
-	// --- Transaction Commit ---
+	// 5. Commit transaction
 	err = tx.Commit(ctx)
 	if err != nil {
 		log.Printf("Error committing transaction for joining ride %s by user %s: %v", rideID, userID, err)
@@ -292,27 +370,86 @@ func (s *RideService) JoinRide(ctx context.Context, rideID uuid.UUID, userID uui
 	return newParticipant, nil
 }
 
+// ValidateRideForJoiningTx performs validation checks within an existing transaction.
+func (s *RideService) ValidateRideForJoiningTx(ctx context.Context, tx pgx.Tx, rideID uuid.UUID, userID uuid.UUID) (*models.Ride, error) {
+	var ride models.Ride
+	// Only select fields needed for validation
+	lockQuery := `
+		SELECT id, user_id, total_seats, status
+		FROM rides
+		WHERE id = $1
+		FOR UPDATE
+	`
+	err := tx.QueryRow(ctx, lockQuery, rideID).Scan(
+		&ride.ID, &ride.UserID, &ride.TotalSeats, &ride.Status,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			log.Printf("ValidationTx failed: Ride not found: ID %s", rideID)
+			return nil, errors.New("ride not found")
+		}
+		log.Printf("Error fetching/locking ride %s for validation by user %s: %v", rideID, userID, err)
+		return nil, fmt.Errorf("database error fetching ride for validation: %w", err)
+	}
+
+	if ride.Status != string(models.RideStatusActive) {
+		log.Printf("ValidationTx failed: Ride %s is not active (status: %s)", rideID, ride.Status)
+		return nil, errors.New("ride is not open for joining")
+	}
+
+	var activeParticipantsCount int
+	countQuery := `SELECT COUNT(*) FROM participants WHERE ride_id = $1 AND status = $2`
+	err = tx.QueryRow(ctx, countQuery, rideID, string(models.ParticipantStatusActive)).Scan(&activeParticipantsCount)
+	if err != nil {
+		log.Printf("Error counting active participants for ride %s during validation: %v", rideID, err)
+		return nil, fmt.Errorf("database error checking ride capacity: %w", err)
+	}
+
+	if activeParticipantsCount >= ride.TotalSeats {
+		log.Printf("ValidationTx failed: Ride %s is full (%d/%d seats taken)", rideID, activeParticipantsCount, ride.TotalSeats)
+		return nil, errors.New("ride is already full")
+	}
+
+	if ride.UserID == userID {
+		log.Printf("ValidationTx failed: User %s cannot join their own ride %s", userID, rideID)
+		return nil, errors.New("you cannot join your own ride")
+	}
+
+	var participationCount int
+	countQuery = `SELECT COUNT(*) FROM participants WHERE ride_id = $1 AND user_id = $2 AND status = $3`
+	err = tx.QueryRow(ctx, countQuery, rideID, userID, string(models.ParticipantStatusActive)).Scan(&participationCount)
+	if err != nil {
+		log.Printf("Error checking active participation for user %s on ride %s: %v", userID, rideID, err)
+		return nil, fmt.Errorf("database error checking participation: %w", err)
+	}
+	if participationCount > 0 {
+		log.Printf("ValidationTx failed: User %s has already actively joined ride %s", userID, rideID)
+		return nil, errors.New("you have already joined this ride")
+	}
+
+	log.Printf("ValidationTx successful for user %s joining ride %s", userID, rideID)
+	return &ride, nil
+}
+
 // RideContactInfo defines the structure for returning participant contact details.
 type RideContactInfo struct {
 	UserID    uuid.UUID `json:"user_id"`
-	FirstName *string   `json:"first_name"` // Use pointer to handle potential NULL
-	LastName  *string   `json:"last_name"`  // Use pointer to handle potential NULL
+	FirstName *string   `json:"first_name"`
+	LastName  *string   `json:"last_name"`
 	WhatsApp  string    `json:"whatsapp"`
-	IsCreator bool      `json:"is_creator"` // Flag to indicate if this user created the ride
+	IsCreator bool      `json:"is_creator"`
 }
 
-// GetRideContacts retrieves the contact information (WhatsApp) for confirmed participants of a ride.
-// It first verifies that the requesting user is also a confirmed participant or the creator.
+// GetRideContacts retrieves contact info for confirmed participants and the creator.
 func (s *RideService) GetRideContacts(ctx context.Context, rideID uuid.UUID, requestingUserID uuid.UUID) ([]RideContactInfo, error) {
 	log.Printf("User %s requesting contacts for ride %s", requestingUserID, rideID)
 
-	// 1. Verify the requesting user's status for this ride (must be creator or confirmed participant)
-	var requesterStatusStr *string // Use pointer to string to handle NULL/non-enum values
+	var requesterStatusStr *string
 	var isCreator bool
 	checkRequesterQuery := `
 		SELECT
-			p.status, -- Select status directly, will be NULL if no participation record
-			(r.user_id = $1) AS is_creator -- Check if requester is the creator
+			p.status,
+			(r.user_id = $1) AS is_creator
 		FROM rides r
 		LEFT JOIN participants p ON r.id = p.ride_id AND p.user_id = $1
 		WHERE r.id = $2
@@ -320,31 +457,18 @@ func (s *RideService) GetRideContacts(ctx context.Context, rideID uuid.UUID, req
 	err := s.db.QueryRow(ctx, checkRequesterQuery, requestingUserID, rideID).Scan(&requesterStatusStr, &isCreator)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// This means the ride itself doesn't exist
 			log.Printf("GetRideContacts failed: Ride %s not found.", rideID)
 			return nil, errors.New("ride not found")
 		}
-		// Other potential scan errors
 		log.Printf("Error checking requester status for user %s on ride %s: %v", requestingUserID, rideID, err)
 		return nil, fmt.Errorf("database error verifying access: %w", err)
 	}
 
-	// Convert status string pointer to ParticipantStatus type if not nil
-	var requesterStatus models.ParticipantStatus = "not_participant" // Default if not found
+	var requesterStatus models.ParticipantStatus = "not_participant"
 	if requesterStatusStr != nil {
 		requesterStatus = models.ParticipantStatus(*requesterStatusStr)
-		// Optional: Add validation here to ensure the string is a valid status
-		// switch requesterStatus {
-		// case models.ParticipantStatusConfirmed, models.ParticipantStatusPendingPayment, ...:
-		//     // Valid status
-		// default:
-		//     log.Printf("Warning: Invalid participant status '%s' found in DB for user %s, ride %s", *requesterStatusStr, requestingUserID, rideID)
-		//     // Handle appropriately, maybe treat as unauthorized
-		//     requesterStatus = "invalid_status"
-		// }
 	}
 
-	// Check authorization: User must be creator or an active participant
 	if !isCreator && requesterStatus != models.ParticipantStatusActive {
 		log.Printf("GetRideContacts failed: User %s is not authorized (Status: %s, IsCreator: %t) for ride %s",
 			requestingUserID, requesterStatus, isCreator, rideID)
@@ -354,28 +478,23 @@ func (s *RideService) GetRideContacts(ctx context.Context, rideID uuid.UUID, req
 	log.Printf("User %s authorized to view contacts for ride %s (Status: %s, IsCreator: %t)",
 		requestingUserID, rideID, requesterStatus, isCreator)
 
-	// 2. Fetch confirmed participants and the creator's details
 	contacts := []RideContactInfo{}
 	getContactsQuery := `
 		SELECT
-			u.id,
-			u.first_name,
-			u.last_name,
-			u.whatsapp,
+			u.id, u.first_name, u.last_name, u.whatsapp,
 			(r.user_id = u.id) AS is_creator
 		FROM users u
-		JOIN rides r ON r.id = $1 -- Join rides to check creator status easily
+		JOIN rides r ON r.id = $1
 		LEFT JOIN participants p ON p.user_id = u.id AND p.ride_id = r.id
 		WHERE
-			r.id = $1 -- Ensure we only get users related to this ride
+			r.id = $1
 			AND (
-				r.user_id = u.id -- Include the creator
+				r.user_id = u.id -- Include the creator OR
 				OR p.status = $2 -- Include active participants
 			)
-		GROUP BY u.id, u.first_name, u.last_name, u.whatsapp, r.user_id -- Group to avoid duplicates if user is both creator and participant (shouldn't happen with checks)
+			AND u.deleted_at IS NULL -- Exclude deleted users
 	`
-
-	rows, err := s.db.Query(ctx, getContactsQuery, rideID, string(models.ParticipantStatusActive)) // Use Active status
+	rows, err := s.db.Query(ctx, getContactsQuery, rideID, string(models.ParticipantStatusActive))
 	if err != nil {
 		log.Printf("Error fetching contacts for ride %s: %v", rideID, err)
 		return nil, fmt.Errorf("database error fetching contacts: %w", err)
@@ -385,11 +504,7 @@ func (s *RideService) GetRideContacts(ctx context.Context, rideID uuid.UUID, req
 	for rows.Next() {
 		var contact RideContactInfo
 		err := rows.Scan(
-			&contact.UserID,
-			&contact.FirstName, // Scan directly into pointers
-			&contact.LastName,  // Scan directly into pointers
-			&contact.WhatsApp,
-			&contact.IsCreator,
+			&contact.UserID, &contact.FirstName, &contact.LastName, &contact.WhatsApp, &contact.IsCreator,
 		)
 		if err != nil {
 			log.Printf("Error scanning contact row for ride %s: %v", rideID, err)
@@ -403,93 +518,96 @@ func (s *RideService) GetRideContacts(ctx context.Context, rideID uuid.UUID, req
 		return nil, fmt.Errorf("database iteration error for contacts: %w", err)
 	}
 
-	// Security check: Ensure the requesting user is actually in the returned list
-	// (Should always be true if authorization check passed, but good for defense)
-	foundRequester := false
-	for _, c := range contacts {
-		if c.UserID == requestingUserID {
-			foundRequester = true
-			break
-		}
-	}
-	if !foundRequester {
-		// This indicates a potential logic error or race condition if status changed between checks
-		log.Printf("GetRideContacts Warning: Requesting user %s was authorized but not found in the final contact list for ride %s.", requestingUserID, rideID)
-		// Return empty list or error? Returning empty might be safer.
-		return []RideContactInfo{}, nil // Return empty list
-	}
-
-	log.Printf("Fetched %d contacts for ride %s for user %s", len(contacts), rideID, requestingUserID)
+	log.Printf("Fetched %d contacts for ride %s", len(contacts), rideID)
 	return contacts, nil
 }
 
-// --- New V2 Functions ---
-
-// SearchRides retrieves a list of active rides based on optional search criteria.
+// SearchRides searches for available rides based on criteria.
 func (s *RideService) SearchRides(ctx context.Context, params models.SearchRidesRequest) ([]models.Ride, error) {
-	rides := []models.Ride{}
-	args := []interface{}{}
-	argID := 1
+	// 1. Validate parameters (basic validation done via tags, add more if needed)
+	if err := s.validator.Struct(params); err != nil {
+		log.Printf("Validation error during ride search: %v", err)
+		return nil, fmt.Errorf("invalid search parameters: %w", err)
+	}
 
-	// Base query selects active rides in the future
-	query := `
-		SELECT id, user_id, start_location, end_location, departure_date, departure_time, total_seats, status, created_at, updated_at
-		FROM rides
-		WHERE status = $` + fmt.Sprintf("%d", argID) + `
-		AND (departure_date > current_date OR (departure_date = current_date AND departure_time > current_time))
+	// 2. Build the base query
+	baseQuery := `
+		SELECT
+			r.id, r.user_id,
+			r.departure_location_name, ST_X(r.departure_coords) AS departure_lon, ST_Y(r.departure_coords) AS departure_lat,
+			r.arrival_location_name, ST_X(r.arrival_coords) AS arrival_lon, ST_Y(r.arrival_coords) AS arrival_lat,
+			r.departure_date, r.departure_time, r.total_seats, r.status, r.created_at, r.updated_at,
+			(SELECT COUNT(*) FROM participants p WHERE p.ride_id = r.id AND p.status = 'active') AS places_taken,
+			u.first_name AS creator_first_name
+		FROM rides r
+		JOIN users u ON r.user_id = u.id
+		WHERE r.status = $1 -- Always filter for active rides
+		  AND (r.departure_date > current_date OR (r.departure_date = current_date AND r.departure_time > current_time)) -- Filter out past rides
+		  AND (SELECT COUNT(*) FROM participants p WHERE p.ride_id = r.id AND p.status = 'active') < r.total_seats -- Filter out full rides
 	`
-	args = append(args, string(models.RideStatusActive))
-	argID++
+	args := []interface{}{string(models.RideStatusActive)}
+	argID := 2 // Start next argument index at 2
 
-	// Add optional filters
+	// 3. Add filters dynamically
 	if params.StartLocation != nil && *params.StartLocation != "" {
-		query += ` AND start_location ILIKE $` + fmt.Sprintf("%d", argID)
-		// Use ILIKE for case-insensitive partial matching
-		args = append(args, "%"+*params.StartLocation+"%")
+		baseQuery += fmt.Sprintf(" AND r.departure_location_name ILIKE $%d", argID)
+		args = append(args, "%"+*params.StartLocation+"%") // Use LIKE for partial matching
 		argID++
 	}
 	if params.EndLocation != nil && *params.EndLocation != "" {
-		query += ` AND end_location ILIKE $` + fmt.Sprintf("%d", argID)
+		baseQuery += fmt.Sprintf(" AND r.arrival_location_name ILIKE $%d", argID)
 		args = append(args, "%"+*params.EndLocation+"%")
 		argID++
 	}
 	if params.DepartureDate != nil && *params.DepartureDate != "" {
-		// Ensure date format is validated by handler/model tag before using here
-		query += ` AND departure_date = $` + fmt.Sprintf("%d", argID)
+		baseQuery += fmt.Sprintf(" AND r.departure_date = $%d", argID)
 		args = append(args, *params.DepartureDate)
 		argID++
 	}
 
-	// Add ordering
-	query += ` ORDER BY departure_date ASC, departure_time ASC`
+	// 4. Add ordering
+	baseQuery += " ORDER BY r.departure_date ASC, r.departure_time ASC"
 
-	// TODO: Add pagination (LIMIT and OFFSET) based on params
+	// 5. Add pagination
+	limit := 20 // Default limit
+	if params.Limit != nil && *params.Limit > 0 && *params.Limit <= 100 {
+		limit = *params.Limit
+	}
+	baseQuery += fmt.Sprintf(" LIMIT $%d", argID)
+	args = append(args, limit)
+	argID++
 
-	log.Printf("Executing ride search query: %s with args: %v", query, args)
+	offset := 0 // Default offset
+	if params.Page != nil && *params.Page > 1 {
+		offset = (*params.Page - 1) * limit
+	}
+	baseQuery += fmt.Sprintf(" OFFSET $%d", argID)
+	args = append(args, offset)
+	// argID++ // No need to increment further
 
-	rows, err := s.db.Query(ctx, query, args...)
+	log.Printf("Executing ride search query: %s with args: %v", baseQuery, args)
+
+	// 6. Execute query
+	rows, err := s.db.Query(ctx, baseQuery, args...)
 	if err != nil {
-		log.Printf("Error searching rides: %v", err)
+		log.Printf("Error executing ride search query: %v", err)
 		return nil, fmt.Errorf("database error searching rides: %w", err)
 	}
 	defer rows.Close()
 
+	// 7. Scan results
+	rides := []models.Ride{}
 	for rows.Next() {
-		var ride models.Ride
-		err := rows.Scan(
-			&ride.ID, &ride.UserID, &ride.StartLocation, &ride.EndLocation,
-			&ride.DepartureDate, &ride.DepartureTime, &ride.TotalSeats,
-			&ride.Status, &ride.CreatedAt, &ride.UpdatedAt,
-		)
+		ride, err := scanRideRow(rows) // Use the helper
 		if err != nil {
 			log.Printf("Error scanning search result row: %v", err)
-			return nil, fmt.Errorf("error processing search results: %w", err)
+			return nil, fmt.Errorf("error processing search result data: %w", err)
 		}
-		rides = append(rides, ride)
+		rides = append(rides, *ride)
 	}
 
 	if err = rows.Err(); err != nil {
-		log.Printf("Error after iterating search results: %v", err)
+		log.Printf("Error after iterating search result rows: %v", err)
 		return nil, fmt.Errorf("database iteration error during search: %w", err)
 	}
 
@@ -498,34 +616,35 @@ func (s *RideService) SearchRides(ctx context.Context, params models.SearchRides
 }
 
 // ListUserCreatedRides retrieves rides created by a specific user.
-// TODO: Add filtering by status (active/archived/cancelled) and pagination.
 func (s *RideService) ListUserCreatedRides(ctx context.Context, userID uuid.UUID) ([]models.Ride, error) {
 	rides := []models.Ride{}
 	query := `
-		SELECT id, user_id, start_location, end_location, departure_date, departure_time, total_seats, status, created_at, updated_at
-		FROM rides
-		WHERE user_id = $1
-		ORDER BY departure_date DESC, departure_time DESC -- Show most recent first
+		SELECT
+			r.id, r.user_id,
+			r.departure_location_name, ST_X(r.departure_coords) AS departure_lon, ST_Y(r.departure_coords) AS departure_lat,
+			r.arrival_location_name, ST_X(r.arrival_coords) AS arrival_lon, ST_Y(r.arrival_coords) AS arrival_lat,
+			r.departure_date, r.departure_time, r.total_seats, r.status, r.created_at, r.updated_at,
+			(SELECT COUNT(*) FROM participants p WHERE p.ride_id = r.id AND p.status = 'active') AS places_taken,
+			u.first_name AS creator_first_name -- Creator name is the user themselves here
+		FROM rides r
+		JOIN users u ON r.user_id = u.id
+		WHERE r.user_id = $1
+		ORDER BY r.departure_date DESC, r.departure_time DESC -- Show most recent first
 	`
 	rows, err := s.db.Query(ctx, query, userID)
 	if err != nil {
-		log.Printf("Error fetching rides created by user %s: %v", userID, err)
+		log.Printf("Error querying created rides for user %s: %v", userID, err)
 		return nil, fmt.Errorf("database error fetching created rides: %w", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var ride models.Ride
-		err := rows.Scan(
-			&ride.ID, &ride.UserID, &ride.StartLocation, &ride.EndLocation,
-			&ride.DepartureDate, &ride.DepartureTime, &ride.TotalSeats,
-			&ride.Status, &ride.CreatedAt, &ride.UpdatedAt,
-		)
+		ride, err := scanRideRow(rows) // Use helper
 		if err != nil {
 			log.Printf("Error scanning created ride row for user %s: %v", userID, err)
 			return nil, fmt.Errorf("error processing created ride data: %w", err)
 		}
-		rides = append(rides, ride)
+		rides = append(rides, *ride)
 	}
 
 	if err = rows.Err(); err != nil {
@@ -533,40 +652,41 @@ func (s *RideService) ListUserCreatedRides(ctx context.Context, userID uuid.UUID
 		return nil, fmt.Errorf("database iteration error for created rides: %w", err)
 	}
 
-	log.Printf("Fetched %d rides created by user %s", len(rides), userID)
+	log.Printf("Fetched %d created rides for user %s", len(rides), userID)
 	return rides, nil
 }
 
-// ListUserJoinedRides retrieves rides joined by a specific user (where participation is active).
-// TODO: Add filtering by ride status (active/archived/cancelled) and pagination.
+// ListUserJoinedRides retrieves rides a specific user has joined (and is active).
 func (s *RideService) ListUserJoinedRides(ctx context.Context, userID uuid.UUID) ([]models.Ride, error) {
 	rides := []models.Ride{}
 	query := `
-		SELECT r.id, r.user_id, r.start_location, r.end_location, r.departure_date, r.departure_time, r.total_seats, r.status, r.created_at, r.updated_at
+		SELECT
+			r.id, r.user_id,
+			r.departure_location_name, ST_X(r.departure_coords) AS departure_lon, ST_Y(r.departure_coords) AS departure_lat,
+			r.arrival_location_name, ST_X(r.arrival_coords) AS arrival_lon, ST_Y(r.arrival_coords) AS arrival_lat,
+			r.departure_date, r.departure_time, r.total_seats, r.status, r.created_at, r.updated_at,
+			(SELECT COUNT(*) FROM participants p_count WHERE p_count.ride_id = r.id AND p_count.status = 'active') AS places_taken,
+			u.first_name AS creator_first_name
 		FROM rides r
 		JOIN participants p ON r.id = p.ride_id
-		WHERE p.user_id = $1 AND p.status = $2 -- Only active participations
-		ORDER BY r.departure_date DESC, r.departure_time DESC -- Show most recent first
+		JOIN users u ON r.user_id = u.id -- Join users table for creator info
+		WHERE p.user_id = $1 AND p.status = $2 -- Filter by user ID and active participation status
+		ORDER BY r.departure_date ASC, r.departure_time ASC -- Show upcoming first
 	`
 	rows, err := s.db.Query(ctx, query, userID, string(models.ParticipantStatusActive))
 	if err != nil {
-		log.Printf("Error fetching rides joined by user %s: %v", userID, err)
+		log.Printf("Error querying joined rides for user %s: %v", userID, err)
 		return nil, fmt.Errorf("database error fetching joined rides: %w", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var ride models.Ride
-		err := rows.Scan(
-			&ride.ID, &ride.UserID, &ride.StartLocation, &ride.EndLocation,
-			&ride.DepartureDate, &ride.DepartureTime, &ride.TotalSeats,
-			&ride.Status, &ride.CreatedAt, &ride.UpdatedAt,
-		)
+		ride, err := scanRideRow(rows) // Use helper
 		if err != nil {
 			log.Printf("Error scanning joined ride row for user %s: %v", userID, err)
 			return nil, fmt.Errorf("error processing joined ride data: %w", err)
 		}
-		rides = append(rides, ride)
+		rides = append(rides, *ride)
 	}
 
 	if err = rows.Err(); err != nil {
@@ -574,17 +694,19 @@ func (s *RideService) ListUserJoinedRides(ctx context.Context, userID uuid.UUID)
 		return nil, fmt.Errorf("database iteration error for joined rides: %w", err)
 	}
 
-	log.Printf("Fetched %d rides joined by user %s", len(rides), userID)
+	log.Printf("Fetched %d joined rides for user %s", len(rides), userID)
 	return rides, nil
 }
 
-// DeleteRide handles the logic for deleting or cancelling a ride created by the user.
+// DeleteRide handles deleting a ride, checking permissions first.
 func (s *RideService) DeleteRide(ctx context.Context, rideID uuid.UUID, userID uuid.UUID) (bool, error) {
-	// Use transaction for consistency
+	log.Printf("User %s attempting to delete ride %s", userID, rideID)
+
 	pool, ok := s.db.(*pgxpool.Pool)
 	if !ok {
 		return false, errors.New("database does not support transactions required for DeleteRide")
 	}
+
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		log.Printf("Error starting transaction for deleting ride %s by user %s: %v", rideID, userID, err)
@@ -592,83 +714,80 @@ func (s *RideService) DeleteRide(ctx context.Context, rideID uuid.UUID, userID u
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Verify the user is the creator of the ride
-	var creatorID uuid.UUID
-	err = tx.QueryRow(ctx, `SELECT user_id FROM rides WHERE id = $1`, rideID).Scan(&creatorID)
+	// 1. Verify ownership and get participant count
+	var rideUserID uuid.UUID
+	var participantCount int
+	checkQuery := `
+		SELECT r.user_id, COUNT(p.id)
+		FROM rides r
+		LEFT JOIN participants p ON r.id = p.ride_id AND p.status = 'active'
+		WHERE r.id = $1
+		GROUP BY r.user_id
+	`
+	err = tx.QueryRow(ctx, checkQuery, rideID).Scan(&rideUserID, &participantCount)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			log.Printf("DeleteRide failed: Ride %s not found.", rideID)
 			return false, errors.New("ride not found")
 		}
-		log.Printf("Error verifying ride creator for ride %s: %v", rideID, err)
-		return false, fmt.Errorf("database error verifying ride ownership: %w", err)
+		log.Printf("Error checking ride ownership/participants for ride %s: %v", rideID, err)
+		return false, fmt.Errorf("database error checking ride details: %w", err)
 	}
-	if creatorID != userID {
-		log.Printf("DeleteRide failed: User %s is not the creator of ride %s", userID, rideID)
+
+	// 2. Check ownership
+	if rideUserID != userID {
+		log.Printf("DeleteRide failed: User %s does not own ride %s", userID, rideID)
 		return false, errors.New("unauthorized to delete this ride")
 	}
 
-	// 2. Check if there are any active participants
-	var activeParticipantCount int
-	countQuery := `SELECT COUNT(*) FROM participants WHERE ride_id = $1 AND status = $2`
-	err = tx.QueryRow(ctx, countQuery, rideID, string(models.ParticipantStatusActive)).Scan(&activeParticipantCount)
+	// 3. Perform deletion (soft or hard based on participants)
+	// For now, let's implement a hard delete as per original logic (no participants check mentioned in v2 for delete)
+	// If soft delete is preferred, update status to 'cancelled' or similar.
+	// Let's stick to hard delete for now. We need to delete participants first due to FK constraints.
+	deleteParticipantsQuery := `DELETE FROM participants WHERE ride_id = $1`
+	_, err = tx.Exec(ctx, deleteParticipantsQuery, rideID)
 	if err != nil {
-		log.Printf("Error counting active participants for ride %s during delete: %v", rideID, err)
-		return false, fmt.Errorf("database error checking participants: %w", err)
+		log.Printf("Error deleting participants for ride %s during ride deletion: %v", rideID, err)
+		return false, fmt.Errorf("failed to delete ride participants: %w", err)
 	}
 
-	hasParticipants := activeParticipantCount > 0
-	log.Printf("Ride %s has %d active participants. Deletion requested by creator %s.", rideID, activeParticipantCount, userID)
-
-	// 3. Perform action based on participants
-	if !hasParticipants {
-		// No active participants, perform hard delete
-		deleteQuery := `DELETE FROM rides WHERE id = $1`
-		_, err = tx.Exec(ctx, deleteQuery, rideID)
-		if err != nil {
-			log.Printf("Error hard deleting ride %s: %v", rideID, err)
-			return false, fmt.Errorf("failed to delete ride: %w", err)
-		}
-		log.Printf("Ride %s hard deleted successfully.", rideID)
-	} else {
-		// Has participants, perform soft delete (cancel)
-		// a) Update ride status to 'cancelled'
-		updateRideQuery := `UPDATE rides SET status = $1, updated_at = NOW() WHERE id = $2`
-		_, err = tx.Exec(ctx, updateRideQuery, string(models.RideStatusCancelled), rideID)
-		if err != nil {
-			log.Printf("Error cancelling ride %s: %v", rideID, err)
-			return false, fmt.Errorf("failed to cancel ride: %w", err)
-		}
-		// b) Update status of active/pending participants to 'cancelled_ride'
-		updateParticipantsQuery := `UPDATE participants SET status = $1, updated_at = NOW() WHERE ride_id = $2 AND status IN ($3, $4)`
-		_, err = tx.Exec(ctx, updateParticipantsQuery, string(models.ParticipantStatusCancelledRide), rideID, string(models.ParticipantStatusActive), string(models.ParticipantStatusPendingPayment))
-		if err != nil {
-			log.Printf("Error updating participants status for cancelled ride %s: %v", rideID, err)
-			return false, fmt.Errorf("failed to update participants for cancelled ride: %w", err)
-		}
-		log.Printf("Ride %s cancelled successfully (had participants).", rideID)
+	deleteRideQuery := `DELETE FROM rides WHERE id = $1 AND user_id = $2`
+	tag, err := tx.Exec(ctx, deleteRideQuery, rideID, userID)
+	if err != nil {
+		log.Printf("Error deleting ride %s owned by user %s: %v", rideID, userID, err)
+		return false, fmt.Errorf("failed to delete ride: %w", err)
 	}
 
-	// Commit transaction
+	if tag.RowsAffected() == 0 {
+		// Should not happen if ownership check passed, but handle defensively
+		log.Printf("DeleteRide failed: Ride %s not found or ownership mismatch after check.", rideID)
+		return false, errors.New("ride not found or could not be deleted")
+	}
+
+	// 4. Commit transaction
 	err = tx.Commit(ctx)
 	if err != nil {
-		log.Printf("Error committing transaction for deleting/cancelling ride %s: %v", rideID, err)
-		return false, fmt.Errorf("failed to finalize ride deletion/cancellation: %w", err)
+		log.Printf("Error committing transaction for deleting ride %s: %v", rideID, err)
+		return false, fmt.Errorf("failed to finalize ride deletion: %w", err)
 	}
 
-	return hasParticipants, nil // Return true if participants existed (for warning message)
+	log.Printf("Ride %s deleted successfully by user %s", rideID, userID)
+	// Return participantCount > 0 to indicate if participants were present (as per v2 spec popup)
+	return participantCount > 0, nil
 }
 
-// LeaveRide allows a participant to leave a ride they have joined.
+// LeaveRide allows a user to leave a ride they have joined.
 func (s *RideService) LeaveRide(ctx context.Context, rideID uuid.UUID, userID uuid.UUID) error {
+	log.Printf("User %s attempting to leave ride %s", userID, rideID)
+
 	// Update participant status to 'left'
-	// Only allow leaving if status is 'active' or 'pending_payment'? Assume yes for now.
-	updateQuery := `
+	// We only allow leaving if the current status is 'active' or 'pending_payment'
+	query := `
 		UPDATE participants
 		SET status = $1, updated_at = NOW()
-		WHERE ride_id = $2 AND user_id = $3 AND status IN ($4, $5)
+		WHERE ride_id = $2 AND user_id = $3 AND (status = $4 OR status = $5)
 	`
-	tag, err := s.db.Exec(ctx, updateQuery,
+	tag, err := s.db.Exec(ctx, query,
 		string(models.ParticipantStatusLeft),
 		rideID,
 		userID,
@@ -677,21 +796,87 @@ func (s *RideService) LeaveRide(ctx context.Context, rideID uuid.UUID, userID uu
 	)
 
 	if err != nil {
-		log.Printf("Error leaving ride %s for user %s: %v", rideID, userID, err)
+		log.Printf("Error updating participant status to 'left' for user %s on ride %s: %v", userID, rideID, err)
 		return fmt.Errorf("database error leaving ride: %w", err)
 	}
 
 	if tag.RowsAffected() == 0 {
-		log.Printf("LeaveRide failed: User %s not found as an active/pending participant in ride %s, or already left.", userID, rideID)
-		// Check if the ride/user exists to give a more specific error?
-		// For now, return a generic error indicating the action couldn't be performed.
-		return errors.New("could not leave ride: participation not found or already left/cancelled")
+		log.Printf("LeaveRide failed: User %s not found as an active/pending participant on ride %s, or ride not found.", userID, rideID)
+		// Check if the ride exists at all to give a better error message
+		var exists bool
+		checkRideQuery := `SELECT EXISTS(SELECT 1 FROM rides WHERE id = $1)`
+		_ = s.db.QueryRow(ctx, checkRideQuery, rideID).Scan(&exists)
+		if !exists {
+			return errors.New("ride not found")
+		}
+		return errors.New("you are not currently an active participant in this ride")
 	}
 
-	log.Printf("User %s successfully left ride %s.", userID, rideID)
+	log.Printf("User %s successfully left ride %s", userID, rideID)
+	// TODO: Consider if any notification should be sent to the creator?
 	return nil
 }
 
-// TODO: Add function to archive rides whose departure date/time is in the past.
-// This could be called periodically by a background job or triggered via an API endpoint.
-// func (s *RideService) ArchivePastRides(ctx context.Context) (int64, error) { ... }
+// GetUserParticipationStatus checks if a user is participating in a ride and returns their status.
+func (s *RideService) GetUserParticipationStatus(ctx context.Context, rideID uuid.UUID, userID uuid.UUID) (string, error) {
+	var status string
+	query := `SELECT status FROM participants WHERE ride_id = $1 AND user_id = $2`
+	err := s.db.QueryRow(ctx, query, rideID, userID).Scan(&status)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "not_participating", nil // User is not in the participants table for this ride
+		}
+		log.Printf("Error fetching participation status for user %s on ride %s: %v", userID, rideID, err)
+		return "", fmt.Errorf("database error fetching participation status: %w", err)
+	}
+	return status, nil
+}
+
+// ListUserHistoryRides retrieves past or cancelled rides for a user (both created and joined).
+func (s *RideService) ListUserHistoryRides(ctx context.Context, userID uuid.UUID) ([]models.Ride, error) {
+	rides := []models.Ride{}
+	// Select rides created by the user OR joined by the user WHERE the ride status is archived/cancelled OR departure is in the past
+	query := `
+		SELECT DISTINCT -- Use DISTINCT to avoid duplicates if user created AND joined (though joining own ride is disallowed)
+			r.id, r.user_id,
+			r.departure_location_name, ST_X(r.departure_coords) AS departure_lon, ST_Y(r.departure_coords) AS departure_lat,
+			r.arrival_location_name, ST_X(r.arrival_coords) AS arrival_lon, ST_Y(r.arrival_coords) AS arrival_lat,
+			r.departure_date, r.departure_time, r.total_seats, r.status, r.created_at, r.updated_at,
+			(SELECT COUNT(*) FROM participants p_count WHERE p_count.ride_id = r.id AND p_count.status = 'active') AS places_taken,
+			u.first_name AS creator_first_name
+		FROM rides r
+		JOIN users u ON r.user_id = u.id
+		LEFT JOIN participants p ON r.id = p.ride_id AND p.user_id = $1 -- Join participants for the requesting user
+		WHERE
+			(r.user_id = $1 OR p.user_id = $1) -- Ride created by user OR joined by user
+			AND
+			(
+				r.status = $2 OR r.status = $3 -- Ride is archived or cancelled
+				OR (r.departure_date < current_date OR (r.departure_date = current_date AND r.departure_time <= current_time)) -- Ride is in the past
+			)
+		ORDER BY r.departure_date DESC, r.departure_time DESC
+	`
+	rows, err := s.db.Query(ctx, query, userID, string(models.RideStatusArchived), string(models.RideStatusCancelled))
+	if err != nil {
+		log.Printf("Error querying history rides for user %s: %v", userID, err)
+		return nil, fmt.Errorf("database error fetching history rides: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		ride, err := scanRideRow(rows) // Use helper
+		if err != nil {
+			log.Printf("Error scanning history ride row for user %s: %v", userID, err)
+			return nil, fmt.Errorf("error processing history ride data: %w", err)
+		}
+		rides = append(rides, *ride)
+	}
+
+	if err = rows.Err(); err != nil {
+		log.Printf("Error after iterating history ride rows for user %s: %v", userID, err)
+		return nil, fmt.Errorf("database iteration error for history rides: %w", err)
+	}
+
+	log.Printf("Fetched %d history rides for user %s", len(rides), userID)
+	return rides, nil
+}

@@ -140,6 +140,7 @@ console.log("Data being sent to signup:", JSON.stringify(userData, null, 2));
           placeholder="Enter your first name"
           error={errors.firstName}
           autoCapitalize="words"
+          testID="signupFirstNameInput" // Added testID
         />
         <TextInput
           label="Last Name"
@@ -148,6 +149,7 @@ console.log("Data being sent to signup:", JSON.stringify(userData, null, 2));
           placeholder="Enter your last name"
           error={errors.lastName}
           autoCapitalize="words"
+          testID="signupLastNameInput" // Added testID
         />
          <TextInput
           label="Email Address"
@@ -157,6 +159,7 @@ console.log("Data being sent to signup:", JSON.stringify(userData, null, 2));
           keyboardType="email-address"
           autoCapitalize="none"
           error={errors.email}
+          testID="signupEmailInput" // Added testID
         />
          <TextInput
           label="Password"
@@ -165,6 +168,7 @@ console.log("Data being sent to signup:", JSON.stringify(userData, null, 2));
           placeholder="Enter your password (min 8 chars)"
           secureTextEntry
           error={errors.password}
+          testID="signupPasswordInput" // Added testID
         />
         <TextInput
           label="Confirm Password"
@@ -173,11 +177,12 @@ console.log("Data being sent to signup:", JSON.stringify(userData, null, 2));
           placeholder="Confirm your password"
           secureTextEntry
           error={errors.confirmPassword}
+          testID="signupConfirmPasswordInput" // Added testID
         />
         {/* Birth Date Picker */}
         <View style={styles.inputContainer}>
             <Text style={styles.label}>Birth Date</Text>
-            <TouchableOpacity onPress={() => setShowBirthDatePicker(true)} style={styles.dateDisplay}>
+            <TouchableOpacity onPress={() => setShowBirthDatePicker(true)} style={styles.dateDisplay} testID="signupBirthDateDisplay">
                 <Text style={styles.dateText}>{birthDate.toLocaleDateString()}</Text>
             </TouchableOpacity>
             {showBirthDatePicker && (
@@ -212,6 +217,7 @@ console.log("Data being sent to signup:", JSON.stringify(userData, null, 2));
                 searchPlaceholder="Search..."
                 zIndex={3000}
                 zIndexInverse={1000}
+                testID="signupNationalityPicker" // Added testID
              />
               {errors.nationality && <Text style={styles.errorText}>{errors.nationality}</Text>}
         </View>
@@ -237,6 +243,7 @@ console.log("Data being sent to signup:", JSON.stringify(userData, null, 2));
                     containerStyle={styles.countryCodeContainer} // Style container for width
                     zIndex={2000}
                     zIndexInverse={2000}
+                    testID="signupCountryCodePicker" // Added testID
                  />
                  <TextInput
                     style={styles.whatsappInput} // Adjust TextInput style
@@ -245,6 +252,7 @@ console.log("Data being sent to signup:", JSON.stringify(userData, null, 2));
                     onChangeText={setLocalWhatsappNumber}
                     placeholder="Your number"
                     keyboardType="phone-pad"
+                    testID="signupLocalWhatsappInput" // Added testID
                  />
              </View>
               {errors.whatsapp && <Text style={styles.errorText}>{errors.whatsapp}</Text>}
@@ -256,10 +264,11 @@ console.log("Data being sent to signup:", JSON.stringify(userData, null, 2));
           onPress={handleSignUp}
           loading={isLoading} // Show loading indicator from context
           style={styles.button}
+          testID="signupButton" // Added testID
         />
 
          {/* Link to Login Screen */}
-         <TouchableOpacity onPress={() => navigation.navigate('Login')} style={styles.loginLink}>
+         <TouchableOpacity onPress={() => navigation.navigate('Login')} style={styles.loginLink} testID="navigateToLoginButton">
             <Text style={styles.loginLinkText}>Already have an account? Log In</Text>
          </TouchableOpacity>
 

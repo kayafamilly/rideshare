@@ -3,8 +3,9 @@ import React from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs'; // Import Bottom Tabs
-import { View, Text, StyleSheet, ActivityIndicator } from 'react-native'; // Added ActivityIndicator
+import { View, Text, StyleSheet, ActivityIndicator } from 'react-native'; // Keep TouchableOpacity removed
 import Ionicons from '@expo/vector-icons/Ionicons'; // Import icons
+// Keep useNavigation hook removed
 
 // Import Screens
 import LoginScreen from '../screens/LoginScreen';
@@ -40,6 +41,7 @@ function LoadingScreen() {
 const AuthStack = createStackNavigator();
 const Tab = createBottomTabNavigator(); // Create Tab Navigator instance
 const HomeStack = createStackNavigator(); // Stack for screens reachable from tabs (e.g., Ride Details)
+// RootStack definition remains removed
 
 // Authentication Stack Navigator (Login, SignUp)
 const AuthStackNavigator = () => (
@@ -61,7 +63,7 @@ const SearchStackNavigator = () => (
     <HomeStack.Screen name="SearchRide" component={SearchRideScreen} options={{ title: 'Search a Ride' }}/>
     {/* AvailableRidesScreen will display results from SearchRideScreen or all rides */}
     <HomeStack.Screen name="AvailableRides" component={RidesListScreen} options={{ title: 'Available Rides' }}/>
-    <HomeStack.Screen name="CreateRide" component={CreateRideScreen} options={{ title: 'Create New Ride' }}/>
+    {/* <HomeStack.Screen name="CreateRide" component={CreateRideScreen} options={{ title: 'Create New Ride' }}/> // Moved to RootStack */}
     <HomeStack.Screen name="RideDetail" component={RideDetailScreen} options={{ title: 'Ride Details' }}/>
   </HomeStack.Navigator>
 );
@@ -85,6 +87,8 @@ const MainTabNavigator = () => (
           iconName = focused ? 'person' : 'person-outline';
         } else if (route.name === 'Settings') {
           iconName = focused ? 'settings' : 'settings-outline';
+        } else if (route.name === 'Create') { // Icon for CreateRide tab
+          iconName = focused ? 'add-circle' : 'add-circle-outline';
         }
         // You can return any component that you like here!
         return <Ionicons name={iconName} size={size} color={color} />;
@@ -101,11 +105,25 @@ const MainTabNavigator = () => (
     <Tab.Screen name="MyRides" component={MyRidesScreen} options={{ title: 'My Rides' }}/>
     <Tab.Screen name="Profile" component={ProfileScreen} options={{ title: 'Profile' }}/>
     <Tab.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }}/>
+    {/* Add Create Ride Screen as a Tab */}
+    <Tab.Screen
+        name="Create"
+        component={CreateRideScreen}
+        options={{
+            title: 'Create Ride',
+            // Optional: Add header style if needed, or keep headerShown: false from screenOptions
+             headerShown: true, // Show header for this specific tab
+             headerStyle: { backgroundColor: '#007bff' },
+             headerTintColor: '#fff',
+             headerTitleStyle: { fontWeight: 'bold' },
+        }}
+    />
   </Tab.Navigator>
 ); // Added missing closing parenthesis and semicolon
 
 
 // Main application navigator - decides which stack to show
+// Restore export default and remove AuthenticatedStack logic
 export default function AppNavigator() {
   const { token, isLoading } = useAuth(); // Get token and loading state from context
 
@@ -114,10 +132,13 @@ export default function AppNavigator() {
     return <LoadingScreen />;
   }
 
+  // AuthenticatedStack component removed
+  // Render the correct navigator based on token presence
   // Render the correct navigator based on token presence
   return (
     <NavigationContainer>
       {token ? <MainTabNavigator /> : <AuthStackNavigator />}
+      {/* FAB logic completely removed */}
     </NavigationContainer>
   );
 }
@@ -141,4 +162,6 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   // Removed headerButton styles as logout is moved or handled differently
+// fab style removed
 });
+// AppNavigatorWrapper export remains removed

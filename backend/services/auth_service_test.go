@@ -64,7 +64,8 @@ func TestAuthService_SignUp_Success(t *testing.T) {
 
 	// --- Mock Expectations ---
 	// 1. Expect check for existing user (email/whatsapp) - return false (not exists)
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT EXISTS(SELECT 1 FROM users WHERE email = $1 OR whatsapp = $2)`)).
+	// Updated regex to include the deleted_at check
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT EXISTS(SELECT 1 FROM users WHERE (email = $1 OR whatsapp = $2) AND deleted_at IS NULL)`)).
 		WithArgs(req.Email, req.WhatsApp).
 		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(false))
 
@@ -117,7 +118,8 @@ func TestAuthService_SignUp_EmailExists(t *testing.T) {
 	}
 
 	// Expect check for existing user - return true (exists)
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT EXISTS(SELECT 1 FROM users WHERE email = $1 OR whatsapp = $2)`)).
+	// Updated regex to include the deleted_at check
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT EXISTS(SELECT 1 FROM users WHERE (email = $1 OR whatsapp = $2) AND deleted_at IS NULL)`)).
 		WithArgs(req.Email, req.WhatsApp).
 		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
 
@@ -157,13 +159,15 @@ func TestAuthService_Login_Success(t *testing.T) {
 
 	// --- Mock Expectations ---
 	// 1. Expect query to find user by email - return user data
+	// Updated regex to include deleted_at check and select stripe_customer_id
 	mock.ExpectQuery(regexp.QuoteMeta(`
-		SELECT id, email, password_hash, first_name, last_name, birth_date, nationality, whatsapp, created_at, updated_at
-		FROM users WHERE email = $1
+		SELECT id, email, password_hash, first_name, last_name, birth_date, nationality, whatsapp, created_at, updated_at, stripe_customer_id
+		FROM users WHERE email = $1 AND deleted_at IS NULL
 	`)).
 		WithArgs(req.Email).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "password_hash", "first_name", "last_name", "birth_date", "nationality", "whatsapp", "created_at", "updated_at"}).
-			AddRow(userID, req.Email, string(hashedPassword), &testFirstName, &testLastName, &now, &testNationality, testWhatsapp, now, now)) // Use pointers for nullable fields
+		// Add stripe_customer_id (as NULL in this case) to the returned columns and row data
+		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "password_hash", "first_name", "last_name", "birth_date", "nationality", "whatsapp", "created_at", "updated_at", "stripe_customer_id"}).
+			AddRow(userID, req.Email, string(hashedPassword), &testFirstName, &testLastName, &now, &testNationality, testWhatsapp, now, now, nil)) // Use nil for NULL stripe_customer_id
 
 	// --- Execute Service Method ---
 	loginResponse, err := authService.Login(context.Background(), req)
@@ -230,13 +234,15 @@ func TestAuthService_Login_IncorrectPassword(t *testing.T) {
 	testWhatsapp := "+1234567890"
 
 	// Expect query to find user by email - return user data with the correct hash
+	// Updated regex to include deleted_at check and select stripe_customer_id
 	mock.ExpectQuery(regexp.QuoteMeta(`
-		SELECT id, email, password_hash, first_name, last_name, birth_date, nationality, whatsapp, created_at, updated_at
-		FROM users WHERE email = $1
+		SELECT id, email, password_hash, first_name, last_name, birth_date, nationality, whatsapp, created_at, updated_at, stripe_customer_id
+		FROM users WHERE email = $1 AND deleted_at IS NULL
 	`)).
 		WithArgs(req.Email).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "password_hash", "first_name", "last_name", "birth_date", "nationality", "whatsapp", "created_at", "updated_at"}).
-			AddRow(userID, req.Email, string(correctHashedPassword), &testFirstName, &testLastName, &now, &testNationality, testWhatsapp, now, now)) // Return the correct hash
+		// Add stripe_customer_id (as NULL) to the returned columns and row data
+		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "password_hash", "first_name", "last_name", "birth_date", "nationality", "whatsapp", "created_at", "updated_at", "stripe_customer_id"}).
+			AddRow(userID, req.Email, string(correctHashedPassword), &testFirstName, &testLastName, &now, &testNationality, testWhatsapp, now, now, nil)) // Return the correct hash
 
 	// Execute
 	_, err := authService.Login(context.Background(), req)
@@ -266,9 +272,10 @@ func TestAuthService_Login_UserNotFound(t *testing.T) {
 	}
 
 	// Expect query to find user by email - return ErrNoRows
+	// Updated regex to include deleted_at check and select stripe_customer_id
 	mock.ExpectQuery(regexp.QuoteMeta(`
-		SELECT id, email, password_hash, first_name, last_name, birth_date, nationality, whatsapp, created_at, updated_at
-		FROM users WHERE email = $1
+		SELECT id, email, password_hash, first_name, last_name, birth_date, nationality, whatsapp, created_at, updated_at, stripe_customer_id
+		FROM users WHERE email = $1 AND deleted_at IS NULL
 	`)).
 		WithArgs(req.Email).
 		WillReturnError(pgx.ErrNoRows) // Simulate user not found

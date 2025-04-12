@@ -16,20 +16,29 @@ const (
 	// Note: 'full' is not a status anymore, it's determined by calculation (total_seats - active_participants)
 )
 
+// GeoPoint represents geographic coordinates.
+type GeoPoint struct {
+	Longitude float64 `json:"longitude"`
+	Latitude  float64 `json:"latitude"`
+}
+
 // Ride represents the structure for the 'rides' table.
 type Ride struct {
-	ID            uuid.UUID `json:"id" db:"id"`
-	UserID        uuid.UUID `json:"user_id" db:"user_id"`               // Creator's User ID
-	StartLocation string    `json:"start_location" db:"start_location"` // Starting point description
-	EndLocation   string    `json:"end_location" db:"end_location"`     // Destination description
-	DepartureDate time.Time `json:"departure_date" db:"departure_date"` // Date of departure
-	DepartureTime string    `json:"departure_time" db:"departure_time"` // Time of departure (HH:MM format) - Stored as TIME in DB
-	TotalSeats    int       `json:"total_seats" db:"total_seats"`       // Total seats offered by creator (1-5)
-	Status        string    `json:"status" db:"status"`                 // active, archived, cancelled (now TEXT)
-	CreatedAt     time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at" db:"updated_at"`
+	ID                    uuid.UUID `json:"id" db:"id"`
+	UserID                uuid.UUID `json:"user_id" db:"user_id"`                                 // Creator's User ID
+	DepartureLocationName string    `json:"departure_location_name" db:"departure_location_name"` // User-friendly name
+	DepartureCoords       *GeoPoint `json:"departure_coords" db:"departure_coords"`               // Geographic coordinates (using custom scan logic or pgtype)
+	ArrivalLocationName   string    `json:"arrival_location_name" db:"arrival_location_name"`     // User-friendly name
+	ArrivalCoords         *GeoPoint `json:"arrival_coords" db:"arrival_coords"`                   // Geographic coordinates (using custom scan logic or pgtype)
+	DepartureDate         time.Time `json:"departure_date" db:"departure_date"`                   // Date of departure
+	DepartureTime         string    `json:"departure_time" db:"departure_time"`                   // Time of departure (HH:MM format) - Stored as TIME in DB
+	TotalSeats            int       `json:"total_seats" db:"total_seats"`                         // Total seats offered by creator (1-5)
+	Status                string    `json:"status" db:"status"`                                   // active, archived, cancelled (now TEXT)
+	PlacesTaken           int       `json:"places_taken"`                                         // Calculated field, not directly from DB column 'nb_places_prises'
+	CreatedAt             time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at" db:"updated_at"`
 	// Optional: Include creator info when fetching rides
-	Creator *User `json:"creator,omitempty" db:"-"` // User who created the ride (populated in service layer, ignored by db)
+	CreatorFirstName *string `json:"creator_first_name,omitempty" db:"creator_first_name"` // Populated by JOIN in GetRideDetails
 }
 
 // ParticipantStatus represents the possible statuses of a participant (now using TEXT in DB).
@@ -57,13 +66,15 @@ type Participant struct {
 
 // --- DTOs (Data Transfer Objects) for API Requests/Responses ---
 
-// CreateRideRequest defines the structure for creating a new ride.
+// CreateRideRequest defines the structure for creating a new ride, including geographic data.
 type CreateRideRequest struct {
-	StartLocation string `json:"start_location" validate:"required"`
-	EndLocation   string `json:"end_location" validate:"required"`
-	DepartureDate string `json:"departure_date" validate:"required,datetime=2006-01-02"` // YYYY-MM-DD
-	DepartureTime string `json:"departure_time" validate:"required,datetime=15:04"`      // HH:MM (24-hour format)
-	TotalSeats    int    `json:"total_seats" validate:"required,min=1,max=5"`            // Renamed field
+	DepartureLocationName string    `json:"departure_location_name" validate:"required"`
+	DepartureCoords       *GeoPoint `json:"departure_coords" validate:"required"` // Frontend sends { longitude, latitude }
+	ArrivalLocationName   string    `json:"arrival_location_name" validate:"required"`
+	ArrivalCoords         *GeoPoint `json:"arrival_coords" validate:"required"`                     // Frontend sends { longitude, latitude }
+	DepartureDate         string    `json:"departure_date" validate:"required,datetime=2006-01-02"` // YYYY-MM-DD
+	DepartureTime         string    `json:"departure_time" validate:"required,datetime=15:04"`      // HH:MM (24-hour format)
+	TotalSeats            int       `json:"total_seats" validate:"required,min=1,max=5"`
 }
 
 // RideResponse defines a structure for returning ride details, potentially including creator info.
@@ -79,7 +90,8 @@ type SearchRidesRequest struct {
 	StartLocation *string `query:"start_location"`                                          // Optional start location filter (e.g., using LIKE %query%)
 	EndLocation   *string `query:"end_location"`                                            // Optional end location filter
 	DepartureDate *string `query:"departure_date" validate:"omitempty,datetime=2006-01-02"` // Optional date filter (YYYY-MM-DD)
-	// Add pagination params later: page, limit
+	Page          *int    `query:"page" validate:"omitempty,min=1"`                         // Optional pagination: page number (1-based)
+	Limit         *int    `query:"limit" validate:"omitempty,min=1,max=100"`                // Optional pagination: items per page (e.g., 1-100)
 }
 
 // JoinRideResponse defines the structure for responding after a user joins a ride.

@@ -19,6 +19,7 @@ type Config struct {
 	StripeWebhookSecret    string
 	ServerPort             string
 	JWTSecret              string // Added for signing JWT tokens
+	OpenRouteServiceAPIKey string // Added for OpenRouteService API
 }
 
 // LoadConfig reads configuration from environment variables.
@@ -41,13 +42,17 @@ func LoadConfig() (*Config, error) {
 		StripeWebhookSecret:    getEnv("STRIPE_WEBHOOK_SECRET", ""),
 		ServerPort:             getEnv("SERVER_PORT", "8080"),                // Default port 8080
 		JWTSecret:              getEnv("JWT_SECRET", "your-very-secret-key"), // !! CHANGE THIS IN PRODUCTION !!
+		OpenRouteServiceAPIKey: getEnv("OPENROUTESERVICE_API_KEY", ""),       // Load OpenRouteService API Key
 	}
 
 	// Basic validation (ensure critical keys are present)
-	if cfg.SupabaseURL == "" || cfg.SupabaseServiceRoleKey == "" || cfg.SupabaseDBPassword == "" || cfg.StripeSecretKey == "" || cfg.JWTSecret == "your-very-secret-key" {
-		log.Println("Warning: One or more critical configuration keys (Supabase URL/Service Key/DB Password, Stripe Secret, JWT Secret) are missing or using default values.")
+	// Basic validation (ensure critical keys are present)
+	// Add OpenRouteServiceAPIKey check
+	if cfg.SupabaseURL == "" || cfg.SupabaseServiceRoleKey == "" || cfg.SupabaseDBPassword == "" || cfg.StripeSecretKey == "" || cfg.JWTSecret == "your-very-secret-key" || cfg.OpenRouteServiceAPIKey == "" {
+		log.Println("Warning: One or more critical configuration keys (Supabase URL/Service Key/DB Password, Stripe Secret, JWT Secret, OpenRouteService API Key) are missing or using default/empty values.")
 		// In a real app, you might return an error here or handle it more robustly.
 		// For JWT_SECRET, it's crucial to set a strong, unique secret via environment variables.
+		// OpenRouteService key is needed for routing features.
 	}
 
 	log.Println("Configuration loaded successfully")

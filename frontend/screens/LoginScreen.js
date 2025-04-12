@@ -65,6 +65,7 @@ const LoginScreen = () => {
           autoCapitalize="none"
           error={errors.email}
           style={styles.inputField}
+          testID="loginEmailInput" // Added testID
         />
         <TextInput
           label="Password"
@@ -74,6 +75,7 @@ const LoginScreen = () => {
           secureTextEntry
           error={errors.password}
           style={styles.inputField}
+          testID="loginPasswordInput" // Added testID
         />
 
         {/* Login Button */}
@@ -82,10 +84,11 @@ const LoginScreen = () => {
           onPress={handleLogin}
           loading={isLoading} // Show loading indicator from context
           style={styles.button}
+          testID="loginButton" // Added testID
         />
 
         {/* Link to SignUp Screen */}
-        <TouchableOpacity onPress={() => navigation.navigate('SignUp')} style={styles.signUpLink}>
+        <TouchableOpacity onPress={() => navigation.navigate('SignUp')} style={styles.signUpLink} testID="navigateToSignUpButton">
           <Text style={styles.signUpLinkText}>Don't have an account? Sign Up</Text>
         </TouchableOpacity>
       </ScrollView>

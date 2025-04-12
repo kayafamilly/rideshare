@@ -1,22 +1,27 @@
 package handlers
 
 import (
-	"errors" // Import errors package for errors.As
-	"fmt"    // For string formatting
-	"log"    // For logging
+	"errors"
+	"fmt"
+	"log"
 	"net/http"
 
-	"github.com/go-playground/validator/v10" // Import validator for error checking
-	"github.com/gofiber/fiber/v2"            // Fiber framework
+	"github.com/go-playground/validator/v10"
+	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 
-	"rideshare/backend/models"   // Local models package
-	"rideshare/backend/services" // Local services package
+	"rideshare/backend/models"
+	"rideshare/backend/services"
 )
 
-// AuthHandler handles HTTP requests related to authentication.
+// AuthHandler handles HTTP requests related to authentication and user management.
 type AuthHandler struct {
-	authService *services.AuthService // Instance of AuthService
+	authService *services.AuthService
+}
+
+// RegisterPushTokenRequest defines the structure for the push token registration request.
+type RegisterPushTokenRequest struct {
+	Token string `json:"token" validate:"required"`
 }
 
 // NewAuthHandler creates a new AuthHandler instance.
@@ -28,156 +33,128 @@ func NewAuthHandler(authService *services.AuthService) *AuthHandler {
 
 // SignUp handles the POST /api/v1/auth/signup request.
 func (h *AuthHandler) SignUp(c *fiber.Ctx) error {
-	// 1. Parse request body into SignUpRequest struct
 	var req models.SignUpRequest
 	if err := c.BodyParser(&req); err != nil {
 		log.Printf("Error parsing signup request body: %v", err)
-		// Return bad request error if parsing fails
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"status":  "error",
 			"message": "Invalid request body",
 			"details": err.Error(),
 		})
 	}
-
-	// Log the received request (excluding password for security)
 	log.Printf("Received signup request for email: %s", req.Email)
 
-	// 2. Call the AuthService to handle signup logic
-	// Use context from Fiber context
 	user, err := h.authService.SignUp(c.Context(), req)
 	if err != nil {
 		log.Printf("Error during signup process for email %s: %v", req.Email, err)
-		// Determine appropriate HTTP status code based on error type
 		statusCode := fiber.StatusInternalServerError
 		errorMessage := "Signup failed due to an internal error"
-		// Check for specific user-friendly errors from the service
-		if err.Error() == "email or WhatsApp number already registered" {
-			statusCode = fiber.StatusConflict // 409 Conflict
-			errorMessage = err.Error()
-		} else if err.Error() == "invalid birth date format (use YYYY-MM-DD)" {
-			statusCode = fiber.StatusBadRequest // 400 Bad Request
-			errorMessage = err.Error()
+		errMsg := err.Error()
+		if errMsg == "email or WhatsApp number already registered" {
+			statusCode = fiber.StatusConflict
+			errorMessage = errMsg
+		} else if errMsg == "invalid birth date format (use YYYY-MM-DD)" {
+			statusCode = fiber.StatusBadRequest
+			errorMessage = errMsg
 		} else {
-			// Check if the underlying error is a validation error
 			var validationErrors validator.ValidationErrors
 			if errors.As(err, &validationErrors) {
-				statusCode = fiber.StatusBadRequest // 400 Bad Request
-				// Provide a more specific validation error message
-				// You can customize this further based on validationErrors if needed
+				statusCode = fiber.StatusBadRequest
 				errorMessage = fmt.Sprintf("Invalid signup data: %v", validationErrors)
 			}
-			// If it's not one of the specific errors or a validation error, it remains 500
 		}
-
-		return c.Status(statusCode).JSON(fiber.Map{
-			"status":  "error",
-			"message": errorMessage,
-			// Optionally include more details in non-production environments
-			// "details": err.Error(),
-		})
+		return c.Status(statusCode).JSON(fiber.Map{"status": "error", "message": errorMessage})
 	}
 
-	// 3. Return successful response (user data without sensitive info)
 	log.Printf("Signup successful for user: %s (ID: %s)", user.Email, user.ID)
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"status":  "success",
 		"message": "User registered successfully",
-		"data":    user, // User object (PasswordHash is already excluded in the model)
+		"data":    user,
 	})
 }
 
 // Login handles the POST /api/v1/auth/login request.
 func (h *AuthHandler) Login(c *fiber.Ctx) error {
-	// 1. Parse request body into LoginRequest struct
 	var req models.LoginRequest
 	if err := c.BodyParser(&req); err != nil {
 		log.Printf("Error parsing login request body: %v", err)
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"status":  "error",
-			"message": "Invalid request body",
-			"details": err.Error(),
+			"status": "error", "message": "Invalid request body", "details": err.Error(),
 		})
 	}
-
-	// Log the received request
 	log.Printf("Received login request for email: %s", req.Email)
 
-	// 2. Call the AuthService to handle login logic
 	loginResponse, err := h.authService.Login(c.Context(), req)
 	if err != nil {
 		log.Printf("Error during login process for email %s: %v", req.Email, err)
 		statusCode := fiber.StatusInternalServerError
 		errorMessage := "Login failed due to an internal error"
-		// Check for specific user-friendly errors
-		if err.Error() == "invalid email or password" {
-			statusCode = fiber.StatusUnauthorized // 401 Unauthorized
-			errorMessage = err.Error()
+		errMsg := err.Error()
+		if errMsg == "invalid email or password" {
+			statusCode = fiber.StatusUnauthorized
+			errorMessage = errMsg
 		} else {
-			// Check if the underlying error is a validation error
 			var validationErrors validator.ValidationErrors
 			if errors.As(err, &validationErrors) {
-				statusCode = fiber.StatusBadRequest // 400 Bad Request
+				statusCode = fiber.StatusBadRequest
 				errorMessage = fmt.Sprintf("Invalid login data: %v", validationErrors)
 			}
-			// If it's not one of the specific errors or a validation error, it remains 500
 		}
-
-		return c.Status(statusCode).JSON(fiber.Map{
-			"status":  "error",
-			"message": errorMessage,
-			// "details": err.Error(), // Optional details
-		})
+		return c.Status(statusCode).JSON(fiber.Map{"status": "error", "message": errorMessage})
 	}
 
-	// 3. Return successful response with token and user data
 	log.Printf("Login successful for user: %s (ID: %s)", loginResponse.User.Email, loginResponse.User.ID)
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
-		"status":  "success",
-		"message": "Login successful",
-		"data":    loginResponse, // Contains token and user info
+		"status": "success", "message": "Login successful", "data": loginResponse,
 	})
 }
 
-// UpdateProfile handles PUT /api/v1/users/profile
-// Requires authentication.
-func (h *AuthHandler) UpdateProfile(c *fiber.Ctx) error {
-	// 1. Get authenticated user ID from context
-	userID, ok := c.Locals("userID").(uuid.UUID)
-	if !ok {
-		userIDStr, okStr := c.Locals("userID").(string)
-		if !okStr {
-			log.Println("Error: User ID not found in context (UpdateProfile)")
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Unauthorized: Missing user identification."})
-		}
-		parsedID, err := uuid.Parse(userIDStr)
-		if err != nil {
-			log.Printf("Error: Invalid User ID format in context: %s", userIDStr)
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Unauthorized: Invalid user identification format."})
-		}
-		userID = parsedID
+// Helper to get userID from context, handling potential string or uuid.UUID types
+func getUserIDFromContext(c *fiber.Ctx, handlerName string) (uuid.UUID, error) {
+	userIDLocal := c.Locals("userID")
+	if userIDLocal == nil {
+		log.Printf("Error: User ID not found in context (%s)", handlerName)
+		return uuid.Nil, errors.New("unauthorized: Missing user identification")
 	}
 
-	// 2. Parse request body into UpdateProfileRequest struct
+	switch id := userIDLocal.(type) {
+	case uuid.UUID:
+		return id, nil
+	case string:
+		parsedID, err := uuid.Parse(id)
+		if err != nil {
+			log.Printf("Error: Invalid User ID format in context (%s): %s", handlerName, id)
+			return uuid.Nil, errors.New("unauthorized: Invalid user identification format")
+		}
+		return parsedID, nil
+	default:
+		log.Printf("Error: Unexpected User ID type in context (%s): %T", handlerName, userIDLocal)
+		return uuid.Nil, errors.New("unauthorized: Unexpected user identification type")
+	}
+}
+
+// UpdateProfile handles PUT /api/v1/users/profile
+func (h *AuthHandler) UpdateProfile(c *fiber.Ctx) error {
+	userID, err := getUserIDFromContext(c, "UpdateProfile")
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": err.Error()})
+	}
+
 	var req models.UpdateProfileRequest
 	if err := c.BodyParser(&req); err != nil {
 		log.Printf("Error parsing update profile request body for user %s: %v", userID, err)
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
-			"status":  "error",
-			"message": "Invalid request body",
-			"details": err.Error(),
+			"status": "error", "message": "Invalid request body", "details": err.Error(),
 		})
 	}
-
 	log.Printf("Received update profile request from user %s: %+v", userID, req)
 
-	// 3. Call service to update profile
 	updatedUser, err := h.authService.UpdateProfile(c.Context(), userID, req)
 	if err != nil {
 		log.Printf("Error updating profile for user %s: %v", userID, err)
 		statusCode := http.StatusInternalServerError
 		errorMessage := "Failed to update profile"
-
 		errMsg := err.Error()
 		if errMsg == "no update data provided" || errMsg == "invalid birth date format (use YYYY-MM-DD)" {
 			statusCode = http.StatusBadRequest
@@ -186,7 +163,7 @@ func (h *AuthHandler) UpdateProfile(c *fiber.Ctx) error {
 			statusCode = http.StatusConflict
 			errorMessage = errMsg
 		} else if errMsg == "user not found or deleted" {
-			statusCode = http.StatusNotFound // Or Forbidden? NotFound seems appropriate
+			statusCode = http.StatusNotFound
 			errorMessage = errMsg
 		} else {
 			var validationErrors validator.ValidationErrors
@@ -195,91 +172,140 @@ func (h *AuthHandler) UpdateProfile(c *fiber.Ctx) error {
 				errorMessage = fmt.Sprintf("Invalid profile data: %v", validationErrors)
 			}
 		}
-
-		return c.Status(statusCode).JSON(fiber.Map{
-			"status":  "error",
-			"message": errorMessage,
-		})
+		return c.Status(statusCode).JSON(fiber.Map{"status": "error", "message": errorMessage})
 	}
 
-	// 4. Return successful response
 	log.Printf("Profile updated successfully for user %s", userID)
 	return c.Status(http.StatusOK).JSON(fiber.Map{
-		"status":  "success",
-		"message": "Profile updated successfully",
-		"data":    updatedUser, // Return updated user data (without password/deleted_at)
+		"status": "success", "message": "Profile updated successfully", "data": updatedUser,
 	})
 }
 
 // DeleteAccount handles DELETE /api/v1/users/account
-// Requires authentication.
 func (h *AuthHandler) DeleteAccount(c *fiber.Ctx) error {
-	// 1. Get authenticated user ID from context
-	userID, ok := c.Locals("userID").(uuid.UUID)
-	if !ok {
-		userIDStr, okStr := c.Locals("userID").(string)
-		if !okStr {
-			log.Println("Error: User ID not found in context (DeleteAccount)")
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Unauthorized: Missing user identification."})
-		}
-		parsedID, err := uuid.Parse(userIDStr)
-		if err != nil {
-			log.Printf("Error: Invalid User ID format in context: %s", userIDStr)
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": "Unauthorized: Invalid user identification format."})
-		}
-		userID = parsedID
+	userID, err := getUserIDFromContext(c, "DeleteAccount")
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": err.Error()})
 	}
-
 	log.Printf("Received delete account request from user %s", userID)
 
-	// 2. Call service to perform soft delete
-	err := h.authService.DeleteAccount(c.Context(), userID)
+	err = h.authService.DeleteAccount(c.Context(), userID)
 	if err != nil {
 		log.Printf("Error deleting account for user %s: %v", userID, err)
 		statusCode := http.StatusInternalServerError
 		errorMessage := "Failed to delete account"
-
 		if err.Error() == "user not found or already deleted" {
 			statusCode = http.StatusNotFound
 			errorMessage = err.Error()
 		}
-
-		return c.Status(statusCode).JSON(fiber.Map{
-			"status":  "error",
-			"message": errorMessage,
-		})
+		return c.Status(statusCode).JSON(fiber.Map{"status": "error", "message": errorMessage})
 	}
 
-	// 3. Return successful response
 	log.Printf("Account deleted successfully for user %s", userID)
-	// Use 200 OK or 204 No Content for successful deletion
 	return c.Status(http.StatusOK).JSON(fiber.Map{
-		"status":  "success",
-		"message": "Account deleted successfully",
+		"status": "success", "message": "Account deleted successfully",
 	})
 }
 
-// SetupAuthRoutes registers the authentication routes with the Fiber app group.
-// SetupUserRoutes registers user profile and account management routes.
-// Requires authentication middleware.
-func SetupUserRoutes(api fiber.Router, authService *services.AuthService, authMiddleware fiber.Handler) {
-	handler := NewAuthHandler(authService) // Reuse AuthHandler for these related actions
+// UpdateLocation handles PUT /api/v1/users/location
+func (h *AuthHandler) UpdateLocation(c *fiber.Ctx) error {
+	userID, err := getUserIDFromContext(c, "UpdateLocation")
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": err.Error()})
+	}
 
-	userGroup := api.Group("/users") // Create /api/v1/users group
+	var req models.UpdateLocationRequest
+	if err := c.BodyParser(&req); err != nil {
+		log.Printf("Error parsing update location request body for user %s: %v", userID, err)
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"status": "error", "message": "Invalid request body", "details": err.Error(),
+		})
+	}
+	log.Printf("Received update location request from user %s: Lat=%f, Lon=%f", userID, req.Latitude, req.Longitude)
+
+	err = h.authService.UpdateLocation(c.Context(), userID, req.Latitude, req.Longitude)
+	if err != nil {
+		log.Printf("Error updating location for user %s: %v", userID, err)
+		statusCode := http.StatusInternalServerError
+		errorMessage := "Failed to update location"
+		errMsg := err.Error()
+		if errMsg == "user not found or deleted" {
+			statusCode = http.StatusNotFound
+			errorMessage = errMsg
+		} else if errMsg == "invalid latitude or longitude provided" {
+			statusCode = http.StatusBadRequest
+			errorMessage = errMsg
+		} else {
+			var validationErrors validator.ValidationErrors
+			if errors.As(err, &validationErrors) {
+				statusCode = http.StatusBadRequest
+				errorMessage = fmt.Sprintf("Invalid location data: %v", validationErrors)
+			}
+		}
+		return c.Status(statusCode).JSON(fiber.Map{"status": "error", "message": errorMessage})
+	}
+
+	log.Printf("Location updated successfully for user %s", userID)
+	return c.SendStatus(http.StatusNoContent)
+}
+
+// RegisterPushToken handles POST /api/v1/users/push-token
+func (h *AuthHandler) RegisterPushToken(c *fiber.Ctx) error {
+	userID, err := getUserIDFromContext(c, "RegisterPushToken")
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"status": "error", "message": err.Error()})
+	}
+
+	var req RegisterPushTokenRequest // Use the struct defined at package level
+	if err := c.BodyParser(&req); err != nil {
+		log.Printf("Error parsing register push token request body for user %s: %v", userID, err)
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
+			"status": "error", "message": "Invalid request body", "details": err.Error(),
+		})
+	}
+
+	// Basic validation on the token itself
+	if req.Token == "" {
+		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"status": "error", "message": "Push token cannot be empty"})
+	}
+	log.Printf("Received register push token request from user %s", userID)
+
+	err = h.authService.RegisterPushToken(c.Context(), userID, req.Token)
+	if err != nil {
+		log.Printf("Error registering push token for user %s: %v", userID, err)
+		statusCode := http.StatusInternalServerError
+		errorMessage := "Failed to register push token"
+		errMsg := err.Error()
+		if errMsg == "user not found or deleted" {
+			statusCode = http.StatusNotFound
+			errorMessage = errMsg
+		} else if errMsg == "invalid push token format" {
+			statusCode = http.StatusBadRequest
+			errorMessage = errMsg
+		}
+		return c.Status(statusCode).JSON(fiber.Map{"status": "error", "message": errorMessage})
+	}
+
+	log.Printf("Push token registered successfully for user %s", userID)
+	return c.SendStatus(http.StatusNoContent)
+}
+
+// SetupUserRoutes registers user profile and account management routes.
+func SetupUserRoutes(api fiber.Router, authService *services.AuthService, authMiddleware fiber.Handler) {
+	handler := NewAuthHandler(authService)
+	userGroup := api.Group("/users")
 	userGroup.Put("/profile", authMiddleware, handler.UpdateProfile)
 	userGroup.Delete("/account", authMiddleware, handler.DeleteAccount)
-	// Add GET /profile later if needed
-
-	log.Println("User routes (/users/profile, /users/account) setup complete.")
+	userGroup.Put("/location", authMiddleware, handler.UpdateLocation)
+	userGroup.Post("/push-token", authMiddleware, handler.RegisterPushToken) // Register the new route
+	log.Println("User routes (/users/profile, /users/account, /users/location, /users/push-token) setup complete.")
 }
 
 // SetupAuthRoutes registers the public authentication routes.
 func SetupAuthRoutes(api fiber.Router, authService *services.AuthService) {
 	handler := NewAuthHandler(authService)
-
-	authGroup := api.Group("/auth") // Create /api/v1/auth group
+	authGroup := api.Group("/auth")
 	authGroup.Post("/signup", handler.SignUp)
 	authGroup.Post("/login", handler.Login)
-
 	log.Println("Authentication routes (/auth/signup, /auth/login) setup complete.")
 }

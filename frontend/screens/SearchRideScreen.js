@@ -11,6 +11,7 @@ const SearchRideScreen = () => {
   const navigation = useNavigation();
   const [startLocation, setStartLocation] = useState('');
   const [endLocation, setEndLocation] = useState('');
+  const [dateTouched, setDateTouched] = useState(false); // Track if date picker was used
   const [date, setDate] = useState(new Date()); // Default to today
   const [showDatePicker, setShowDatePicker] = useState(false);
 
@@ -18,6 +19,7 @@ const SearchRideScreen = () => {
     const currentDate = selectedDate || date;
     setShowDatePicker(Platform.OS === 'ios'); // Keep open on iOS until dismissed
     setDate(currentDate);
+    setDateTouched(true); // Mark date as touched
   };
 
   const showDatepicker = () => {
@@ -40,15 +42,19 @@ const SearchRideScreen = () => {
 
   const handleSearch = () => {
     const searchParams = {};
-    if (startLocation.trim()) {
+    const startTrimmed = startLocation.trim();
+    const endTrimmed = endLocation.trim();
+
+    if (startTrimmed) {
       searchParams.start_location = startLocation.trim();
     }
-    if (endLocation.trim()) {
+    if (endTrimmed) {
       searchParams.end_location = endLocation.trim();
     }
-    // Only add date if it's different from the initial default (today)
-    // Or maybe always add it? Let's always add it for now.
-    searchParams.departure_date = formatDate(date);
+    // Only add date if the user explicitly selected one
+    if (dateTouched) {
+      searchParams.departure_date = formatDate(date);
+    }
 
     console.log("Navigating to Available Rides with params:", searchParams);
     // Navigate to AvailableRides screen, passing search params
@@ -76,7 +82,7 @@ const SearchRideScreen = () => {
       <View style={styles.datePickerContainer}>
           <Text style={styles.label}>Date (Optional)</Text>
           {/* Button to show picker on Android/iOS */}
-          <TouchableOpacity onPress={showDatepicker} style={styles.dateDisplay}>
+          <TouchableOpacity onPress={showDatepicker} style={styles.dateDisplay} testID="searchDateDisplay">
              <Text style={styles.dateText}>{date.toLocaleDateString()}</Text>
           </TouchableOpacity>
           {showDatePicker && (
@@ -88,7 +94,7 @@ const SearchRideScreen = () => {
               display="default" // Or 'spinner'
               onChange={onDateChange}
               minimumDate={new Date()} // Prevent selecting past dates
-            />
+            /> // Removed duplicate closing parenthesis
           )}
       </View>
 

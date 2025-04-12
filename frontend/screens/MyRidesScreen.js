@@ -6,23 +6,29 @@ import { rideService } from '../services/api';
 import Button from '../components/Button'; // For Delete/Leave buttons
 
 // Simplified RideItem for MyRides screen
-const MyRideItem = ({ item, type, onDelete, onLeave, onViewDetails }) => (
+const MyRideItem = ({ item, type, onDelete, onLeave, onViewDetails, onViewContacts }) => ( // Added onViewContacts
   <View style={styles.rideItem}>
     <TouchableOpacity onPress={() => onViewDetails(item.id)}>
         <Text style={styles.rideLocation}>{item.start_location} ➔ {item.end_location}</Text>
         <Text style={styles.rideDateTime}>
-        {item.departure_date ? new Date(item.departure_date).toLocaleDateString() : 'N/A'} at {item.departure_time || 'N/A'}
+        {item.departure_date ? new Date(item.departure_date).toLocaleDateString() : 'N/A'} at {item.departure_time ? item.departure_time.substring(0, 5) : 'N/A'}
         </Text>
-        <Text style={styles.rideSeats}>{item.total_seats} total seat(s)</Text>
+        {/* Display available seats */}
+        <Text style={styles.rideSeats}>
+            {(item.total_seats ?? 0) - (item.places_taken ?? 0)} seat(s) available
+        </Text>
         <Text style={styles.rideStatus(item.status)}>Status: {item.status}</Text>
     </TouchableOpacity>
     {/* Action Buttons */}
     <View style={styles.actionButtons}>
         {type === 'created' && (
-            <Button title="Delete" onPress={() => onDelete(item.id)} style={styles.deleteButton} textStyle={styles.actionButtonText} />
+            <Button title="Delete" onPress={() => onDelete(item.id)} style={styles.deleteButton} textStyle={styles.actionButtonText} testID={`deleteButton-${item.id}`} />
         )}
-        {type === 'joined' && item.status === 'active' && ( // Only allow leaving active rides user joined
-            <Button title="Leave Ride" onPress={() => onLeave(item.id)} style={styles.leaveButton} textStyle={styles.actionButtonText} />
+        {type === 'joined' && item.status === 'active' && ( // Actions for active joined rides
+            <>
+              <Button title="View Contacts" onPress={() => onViewContacts(item.id)} style={styles.contactsButton} textStyle={styles.actionButtonText} />
+              <Button title="Leave Ride" onPress={() => onLeave(item.id)} style={styles.leaveButton} textStyle={styles.actionButtonText} testID={`leaveButton-${item.id}`} />
+            </>
         )}
          <Button title="Details" onPress={() => onViewDetails(item.id)} style={styles.detailsButton} textStyle={styles.actionButtonText} />
     </View>
@@ -37,32 +43,50 @@ const MyRidesScreen = () => {
     const [createdRides, setCreatedRides] = useState([]);
     const [joinedRides, setJoinedRides] = useState([]);
     const [isRefreshing, setIsRefreshing] = useState(false);
-    const [activeTab, setActiveTab] = useState('created'); // 'created' or 'joined'
+    const [activeTab, setActiveTab] = useState('created'); // 'created', 'joined', or 'history'
+
+    const [historyRides, setHistoryRides] = useState([]); // State for history
 
     const fetchData = useCallback(async () => {
         console.log(`Fetching ${activeTab} rides...`);
         if (!isRefreshing) setIsLoading(true);
         setError(null);
+        let fetchFunction;
+        let setDataFunction;
+
+        switch (activeTab) {
+            case 'created':
+                fetchFunction = rideService.listCreatedRides;
+                setDataFunction = setCreatedRides;
+                break;
+            case 'joined':
+                fetchFunction = rideService.listJoinedRides;
+                setDataFunction = setJoinedRides;
+                break;
+            case 'history':
+                fetchFunction = rideService.listHistoryRides; // Use the actual function
+                // fetchFunction = async () => { console.warn("History fetch not implemented"); return { status: 'success', data: [] }; }; // Placeholder removed
+                setDataFunction = setHistoryRides;
+                break;
+            default:
+                console.error("Invalid tab selected");
+                setIsLoading(false);
+                setIsRefreshing(false);
+                return;
+        }
+
         try {
-            let response;
-            if (activeTab === 'created') {
-                response = await rideService.listCreatedRides();
-                if (response.status === 'success' && Array.isArray(response.data)) {
-                    setCreatedRides(response.data);
-                } else {
-                    throw new Error(response.message || 'Failed to fetch created rides');
-                }
-            } else { // activeTab === 'joined'
-                response = await rideService.listJoinedRides();
-                 if (response.status === 'success' && Array.isArray(response.data)) {
-                    setJoinedRides(response.data);
-                } else {
-                    throw new Error(response.message || 'Failed to fetch joined rides');
-                }
+            const response = await fetchFunction();
+            if (response.status === 'success' && Array.isArray(response.data)) {
+                setDataFunction(response.data);
+            } else {
+                throw new Error(response.message || `Failed to fetch ${activeTab} rides`);
             }
         } catch (err) {
             console.error(`Error fetching ${activeTab} rides:`, err);
             setError(err.message || `An error occurred while fetching ${activeTab} rides.`);
+            // Clear data on error? Optional.
+            // setDataFunction([]);
         } finally {
             setIsLoading(false);
             setIsRefreshing(false);
@@ -139,7 +163,28 @@ const MyRidesScreen = () => {
     };
 
      const handleViewDetails = (rideId) => {
-        navigation.navigate('RideDetail', { rideId });
+        // Navigate to the 'Search' tab first, then to the 'RideDetail' screen within its stack
+        navigation.navigate('Search', { screen: 'RideDetail', params: { rideId } });
+    };
+
+    const handleViewContacts = async (rideId) => {
+        console.log(`Attempting to view contacts for ride ${rideId}`);
+        try {
+            // Call the API service function
+            const response = await rideService.getRideContacts(rideId);
+            if (response.status === 'success' && Array.isArray(response.data)) {
+                // Format the contact information for display
+                const contactsText = response.data.map(contact =>
+                    `${contact.first_name || 'N/A'} ${contact.last_name || ''} (${contact.is_creator ? 'Creator' : 'Participant'}): ${contact.whatsapp}`
+                ).join('\n');
+                Alert.alert("Ride Contacts", contactsText || "No contacts found (this shouldn't happen if authorized).");
+            } else {
+                throw new Error(response.message || "Failed to fetch contacts");
+            }
+        } catch (err) {
+            console.error(`Error fetching contacts for ride ${rideId}:`, err);
+            Alert.alert("Error", err.message || "Could not fetch ride contacts.");
+        }
     };
 
 
@@ -151,10 +196,22 @@ const MyRidesScreen = () => {
             return <Text style={styles.errorText}>Error: {error}</Text>;
         }
 
-        const data = activeTab === 'created' ? createdRides : joinedRides;
-        const emptyMessage = activeTab === 'created'
-            ? "You haven't created any rides yet."
-            : "You haven't joined any rides yet.";
+        let data = [];
+        let emptyMessage = "";
+        switch (activeTab) {
+            case 'created':
+                data = createdRides;
+                emptyMessage = "You haven't created any rides yet.";
+                break;
+            case 'joined':
+                data = joinedRides;
+                emptyMessage = "You haven't joined any rides yet.";
+                break;
+            case 'history':
+                data = historyRides;
+                emptyMessage = "No past rides found in your history.";
+                break;
+        }
 
         return (
             <FlatList
@@ -167,6 +224,7 @@ const MyRidesScreen = () => {
                         onDelete={handleDeleteRide}
                         onLeave={handleLeaveRide}
                         onViewDetails={handleViewDetails}
+                        onViewContacts={handleViewContacts} // Pass the new handler
                     />
                 )}
                 style={styles.list}
@@ -195,6 +253,12 @@ const MyRidesScreen = () => {
               <Text style={[styles.tabButtonText, activeTab === 'joined' && styles.activeTabButtonText]}>Joined By Me</Text>
           </TouchableOpacity>
       </View>
+      <TouchableOpacity
+            style={[styles.tabButton, activeTab === 'history' && styles.activeTabButton]}
+            onPress={() => setActiveTab('history')}
+          >
+              <Text style={[styles.tabButtonText, activeTab === 'history' && styles.activeTabButtonText]}>History</Text>
+          </TouchableOpacity>
       {renderContent()}
     </View>
   );
@@ -295,6 +359,14 @@ const styles = StyleSheet.create({
   },
   deleteButton: {
       backgroundColor: '#dc3545',
+      paddingVertical: 5,
+      paddingHorizontal: 12,
+      marginLeft: 8,
+      minHeight: 0,
+      width: 'auto',
+  },
+  contactsButton: {
+      backgroundColor: '#17a2b8', // Teal color
       paddingVertical: 5,
       paddingHorizontal: 12,
       marginLeft: 8,

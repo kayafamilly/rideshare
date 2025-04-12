@@ -110,8 +110,46 @@ export const authService = {
     return apiClient.post('/auth/login', credentials);
   },
 
+  /**
+   * Gets the profile of the currently authenticated user. Requires authentication token.
+   * @returns {Promise<object>} - Promise resolving with the user profile data
+   */
+  getProfile: () => {
+    console.log('Calling API: GET /users/profile');
+    return apiClient.get('/users/profile');
+  },
+  /**
+   * Updates the profile of the currently authenticated user. Requires authentication token.
+   * @param {object} profileData - The profile data to update
+   * @returns {Promise<object>} - Promise resolving with the updated user profile data
+   */
+  updateProfile: (profileData) => { // Moved from rideService
+    console.log('Calling API: PUT /users/profile');
+    return apiClient.put('/users/profile', profileData);
+  },
   // Add other auth-related functions here if needed (e.g., logout, password reset)
-};
+ 
+  /**
+   * Updates the last known location of the currently authenticated user. Requires authentication token.
+   * @param {object} locationData - { latitude, longitude }
+   * @returns {Promise<object>} - Promise resolving with the backend response (likely empty on success)
+   */
+  updateUserLocation: (locationData) => {
+  	console.log('Calling API: PUT /users/location');
+  	return apiClient.put('/users/location', locationData);
+  },
+ 
+  /**
+  	* Registers the Expo Push Token with the backend. Requires authentication token.
+  	* @param {string} pushToken - The Expo push token.
+  	* @returns {Promise<object>} - Promise resolving with the backend response.
+  	*/
+  registerPushToken: (pushToken) => {
+  	console.log('Calling API: POST /users/push-token');
+  	// TODO: Implement this endpoint on the backend
+  	return apiClient.post('/users/push-token', { token: pushToken });
+  },
+ };
 
 // Ride Service
 export const rideService = {
@@ -185,6 +223,10 @@ export const rideService = {
      console.log('Calling API: GET /users/me/rides/joined');
      return apiClient.get('/users/me/rides/joined');
    },
+   listHistoryRides: () => {
+     console.log('Calling API: GET /users/me/rides/history');
+     return apiClient.get('/users/me/rides/history');
+   },
    deleteRide: (rideId) => {
      console.log(`Calling API: DELETE /rides/${rideId}`);
      return apiClient.delete(`/rides/${rideId}`);
@@ -193,12 +235,26 @@ export const rideService = {
      console.log(`Calling API: POST /rides/${rideId}/leave`);
      return apiClient.post(`/rides/${rideId}/leave`);
    },
-
-   // --- Profile Functions ---
-   updateProfile: (profileData) => {
-     console.log('Calling API: PUT /users/profile');
-     return apiClient.put('/users/profile', profileData);
+   /**
+    * Attempts to automatically join a ride and charge the saved payment method. Requires authentication.
+    * @param {string} rideId - The UUID of the ride to join
+    * @returns {Promise<object>} - Promise resolving with success/error message
+    */
+   joinRideAutomatically: (rideId) => {
+     console.log(`Calling API: POST /rides/${rideId}/join-automatic`);
+     return apiClient.post(`/rides/${rideId}/join-automatic`);
    },
+   /**
+    * Gets the participation status of the current user for a specific ride. Requires authentication.
+    * @param {string} rideId - The UUID of the ride
+    * @returns {Promise<object>} - Promise resolving with { participation_status: string }
+    */
+   getMyParticipationStatus: (rideId) => {
+     console.log(`Calling API: GET /rides/${rideId}/my-status`);
+     return apiClient.get(`/rides/${rideId}/my-status`);
+   },
+
+   // updateProfile moved to authService
 
    // --- Settings Functions ---
    deleteAccount: () => {
@@ -218,6 +274,16 @@ export const paymentService = {
     console.log(`Calling API: POST /rides/${rideId}/create-payment-intent`);
     // No request body needed as per current backend implementation
     return apiClient.post(`/rides/${rideId}/create-payment-intent`);
+  },
+
+  /**
+   * Creates a setup intent to save payment details for future use. Requires authentication token.
+   * @returns {Promise<object>} - Promise resolving with { client_secret, customer_id }
+   */
+  createSetupIntent: () => {
+    console.log('Calling API: POST /payments/setup-intent');
+    // No request body needed
+    return apiClient.post('/payments/setup-intent');
   },
 };
 

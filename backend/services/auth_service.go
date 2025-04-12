@@ -112,11 +112,12 @@ func (s *AuthService) Login(ctx context.Context, req models.LoginRequest) (*mode
 	// 2. Find the user by email (ensure not deleted)
 	var user models.User
 	query := `
-		SELECT id, email, password_hash, first_name, last_name, birth_date, nationality, whatsapp, created_at, updated_at
+		SELECT id, email, password_hash, first_name, last_name, birth_date, nationality, whatsapp, created_at, updated_at, stripe_customer_id
 		FROM users WHERE email = $1 AND deleted_at IS NULL
-	` // Added deleted_at check
+	` // Added deleted_at check and stripe_customer_id
+	// Use pointer for stripe_customer_id to handle NULL
 	err := database.DB.QueryRow(ctx, query, req.Email).Scan(
-		&user.ID, &user.Email, &user.PasswordHash, &user.FirstName, &user.LastName, &user.BirthDate, &user.Nationality, &user.WhatsApp, &user.CreatedAt, &user.UpdatedAt,
+		&user.ID, &user.Email, &user.PasswordHash, &user.FirstName, &user.LastName, &user.BirthDate, &user.Nationality, &user.WhatsApp, &user.CreatedAt, &user.UpdatedAt, &user.StripeCustomerID,
 	)
 
 	if err != nil {
@@ -146,7 +147,11 @@ func (s *AuthService) Login(ctx context.Context, req models.LoginRequest) (*mode
 	log.Printf("User logged in successfully: %s (ID: %s)", user.Email, user.ID)
 
 	// Prepare response (don't include password hash)
+	// Determine if user has a payment method based on StripeCustomerID
+	user.HasPaymentMethod = user.StripeCustomerID != nil && *user.StripeCustomerID != ""
+	// Exclude sensitive fields from response
 	user.PasswordHash = ""
+	user.StripeCustomerID = nil // Don't send stripe customer id to frontend
 	loginResponse := &models.LoginResponse{
 		Token: token,
 		User:  user,
@@ -301,5 +306,71 @@ func (s *AuthService) DeleteAccount(ctx context.Context, userID uuid.UUID) error
 	log.Printf("User %s soft deleted successfully.", userID)
 	// TODO: Add logic to handle related data if necessary (e.g., cancel active rides/participations?)
 	// For V2, just deleting the user might be sufficient as per requirements.
+	return nil
+}
+
+// UpdateLocation updates the user's last known geographical location.
+func (s *AuthService) UpdateLocation(ctx context.Context, userID uuid.UUID, latitude float64, longitude float64) error {
+	log.Printf("Attempting to update location for user %s to Lat: %f, Lon: %f", userID, latitude, longitude)
+
+	// Validate coordinates roughly (basic checks, more complex validation could be added)
+	if latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180 {
+		log.Printf("Invalid coordinates provided for user %s: Lat=%f, Lon=%f", userID, latitude, longitude)
+		return errors.New("invalid latitude or longitude provided")
+	}
+
+	// Use ST_MakePoint(longitude, latitude) for PostGIS POINT type
+	// SRID 4326 corresponds to WGS 84
+	query := `
+		UPDATE users
+		SET last_known_location = ST_SetSRID(ST_MakePoint($1, $2), 4326),
+		    updated_at = NOW()
+		WHERE id = $3 AND deleted_at IS NULL
+	`
+	tag, err := database.DB.Exec(ctx, query, longitude, latitude, userID) // Note: Longitude first for ST_MakePoint
+
+	if err != nil {
+		log.Printf("Error updating location for user %s: %v", userID, err)
+		return fmtErrorf("database error updating location: %w", err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		log.Printf("Update location failed: User %s not found or already deleted.", userID)
+		return errors.New("user not found or deleted")
+	}
+
+	log.Printf("Location updated successfully for user %s", userID)
+	return nil
+}
+
+// RegisterPushToken saves or updates the Expo Push Token for a given user.
+func (s *AuthService) RegisterPushToken(ctx context.Context, userID uuid.UUID, pushToken string) error {
+	log.Printf("Attempting to register push token for user %s", userID)
+
+	// Basic validation for the token (Expo tokens usually start with ExponentPushToken[...])
+	if len(pushToken) < 10 { // Arbitrary basic check
+		log.Printf("Invalid push token format provided for user %s: %s", userID, pushToken)
+		return errors.New("invalid push token format")
+	}
+
+	query := `
+		UPDATE users
+		SET expo_push_token = $1,
+		    updated_at = NOW()
+		WHERE id = $2 AND deleted_at IS NULL
+	`
+	tag, err := database.DB.Exec(ctx, query, pushToken, userID)
+
+	if err != nil {
+		log.Printf("Error registering push token for user %s: %v", userID, err)
+		return fmtErrorf("database error registering push token: %w", err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		log.Printf("Register push token failed: User %s not found or already deleted.", userID)
+		return errors.New("user not found or deleted")
+	}
+
+	log.Printf("Push token registered successfully for user %s", userID)
 	return nil
 }

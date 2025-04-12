@@ -22,7 +22,8 @@ type DBPool interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	Ping(ctx context.Context) error
 	Close()
-	// Add other methods used by your services if needed (e.g., Begin, BeginTx)
+	Begin(ctx context.Context) (pgx.Tx, error) // Add Begin method for transactions
+	// Add BeginTx if specific transaction options are needed
 }
 
 // DB holds the database connection pool interface.
