@@ -17,12 +17,12 @@
       "bundleIdentifier": "com.rideshare.app"
     },
     "android": {
-    	"package": "com.rideshare.app",
-    	"googleServicesFile": "./android/app/google-services.json",
+      "package": "com.rideshare.app",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
+      "googleServicesFile": "./android/app/google-services.json",
       "notification": {
         "icon": "./assets/notification-icon.png",
         "color": "#FFFFFF"
